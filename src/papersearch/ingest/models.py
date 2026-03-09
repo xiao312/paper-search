@@ -56,6 +56,7 @@ class Document:
     tables: list[Table] = field(default_factory=list)
     equations: list[Equation] = field(default_factory=list)
     references: list[Reference] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -76,5 +77,6 @@ def as_document(doc: Document | dict[str, Any]) -> Document:
         tables=[Table(**t) for t in (doc.get("tables") or [])],
         equations=[Equation(**e) for e in (doc.get("equations") or [])],
         references=[Reference(**r) for r in (doc.get("references") or [])],
+        metadata=doc.get("metadata") or {},
         provenance=doc.get("provenance") or {},
     )

@@ -34,6 +34,7 @@ def ingest_doi(
         source="metadata-fallback",
         title=title or doi or "Untitled",
         abstract=abstract or "",
+        metadata={"doi": doi, "authors": [], "affiliations": []},
         provenance={"doi": doi, "api": "fallback"},
     )
 

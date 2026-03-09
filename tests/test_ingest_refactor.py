@@ -52,6 +52,25 @@ class TestIngestRefactor(unittest.TestCase):
         self.assertIn("![Fig. 1](assets/a.jpg)", md)
         self.assertNotIn("/abs/a.jpg", md)
 
+    def test_metadata_rendered(self):
+        doc = Document(
+            title="T",
+            metadata={
+                "doi": "10.1016/j.test.1",
+                "authors": ["A. One", "B. Two"],
+                "affiliations": ["Institute X"],
+                "journal": "Fuel",
+                "cover_date": "2026-01-01",
+            },
+        )
+        md = render_markdown(doc)
+        self.assertIn("## Metadata", md)
+        self.assertIn("**DOI:** 10.1016/j.test.1", md)
+        self.assertIn("**Authors:**", md)
+        self.assertIn("  - A. One", md)
+        self.assertIn("  - B. Two", md)
+        self.assertIn("Institute X", md)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ from papersearch.ingest.models import Document
 from papersearch.ingest.xml_extractors import (
     extract_abstract,
     extract_figures,
+    extract_metadata,
     extract_object_map,
     extract_references,
     extract_sections,
@@ -28,5 +29,6 @@ def parse_elsevier_xml(xml_text: str, doi: str | None = None) -> Document:
         tables=extract_tables(root),
         equations=[],
         references=extract_references(root),
+        metadata=extract_metadata(root, fallback_doi=doi),
         provenance={"doi": doi, "api": "elsevier_fulltext"},
     )

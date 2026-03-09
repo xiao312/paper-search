@@ -12,6 +12,8 @@ __pycache__/
 # Runtime data
 /data/app.db
 /data/live_markdown/
+/data/live*/
+/data/live*
 
 # OS/editor
 .DS_Store

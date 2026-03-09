@@ -46,6 +46,91 @@ def extract_abstract(root: ET.Element) -> str:
     return ""
 
 
+def _normalize_person_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if "," in name:
+        last, first = [x.strip() for x in name.split(",", 1)]
+        if first and last:
+            return f"{first} {last}"
+    return name
+
+
+def extract_metadata(root: ET.Element, fallback_doi: str | None = None) -> dict:
+    md: dict[str, object] = {
+        "doi": "",
+        "pii": "",
+        "journal": "",
+        "cover_date": "",
+        "volume": "",
+        "issue": "",
+        "page_range": "",
+        "article_number": "",
+        "publisher": "",
+        "authors": [],
+        "affiliations": [],
+    }
+
+    creators: list[str] = []
+    affs: list[str] = []
+
+    for e in root.iter():
+        t = strip_ns(e.tag)
+        txt = iter_text(e)
+        if not txt:
+            continue
+
+        if t == "doi" and not md["doi"]:
+            md["doi"] = txt
+        elif t == "identifier" and not md["doi"] and txt.lower().startswith("doi:"):
+            md["doi"] = txt.split(":", 1)[1].strip()
+        elif t == "pii" and not md["pii"]:
+            md["pii"] = txt
+        elif t == "publicationName" and not md["journal"]:
+            md["journal"] = txt
+        elif t == "coverDate" and not md["cover_date"]:
+            md["cover_date"] = txt
+        elif t == "volume" and not md["volume"]:
+            md["volume"] = txt
+        elif t in ("number", "issueIdentifier") and not md["issue"]:
+            md["issue"] = txt
+        elif t == "pageRange" and not md["page_range"]:
+            md["page_range"] = txt
+        elif t == "articleNumber" and not md["article_number"]:
+            md["article_number"] = txt
+        elif t == "publisher" and not md["publisher"]:
+            md["publisher"] = txt
+        elif t == "creator":
+            creators.append(txt)
+        elif t == "textfn":
+            affs.append(txt)
+
+    if not md["doi"] and fallback_doi:
+        md["doi"] = fallback_doi
+
+    if not creators:
+        # fallback to structured author nodes
+        for au in root.iter():
+            if strip_ns(au.tag) != "author":
+                continue
+            gn = ""
+            sn = ""
+            for ch in au.iter():
+                tt = strip_ns(ch.tag)
+                if tt == "given-name" and not gn:
+                    gn = iter_text(ch)
+                elif tt == "surname" and not sn:
+                    sn = iter_text(ch)
+            full = " ".join(x for x in [gn, sn] if x).strip()
+            if full:
+                creators.append(full)
+
+    md["authors"] = list(dict.fromkeys(_normalize_person_name(c) for c in creators if c.strip()))
+    md["affiliations"] = list(dict.fromkeys(a.strip() for a in affs if a.strip()))
+    return md
+
+
 def extract_sections(root: ET.Element) -> list[Section]:
     sections: list[Section] = []
     for sec in root.iter():

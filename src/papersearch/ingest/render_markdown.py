@@ -48,6 +48,39 @@ def render_markdown(doc: Document | dict) -> str:
     lines.append(f"# {d.title or 'Untitled'}")
     lines.append("")
 
+    md = d.metadata or {}
+    meta_lines: list[str] = []
+    if md.get("doi"):
+        meta_lines.append(f"- **DOI:** {md['doi']}")
+    if md.get("journal"):
+        meta_lines.append(f"- **Journal:** {md['journal']}")
+    if md.get("cover_date"):
+        meta_lines.append(f"- **Published:** {md['cover_date']}")
+    vol_issue = ""
+    if md.get("volume"):
+        vol_issue += str(md["volume"])
+    if md.get("issue"):
+        vol_issue += f"({md['issue']})"
+    if vol_issue:
+        meta_lines.append(f"- **Volume/Issue:** {vol_issue}")
+    if md.get("page_range"):
+        meta_lines.append(f"- **Pages:** {md['page_range']}")
+    if md.get("article_number"):
+        meta_lines.append(f"- **Article number:** {md['article_number']}")
+
+    authors = md.get("authors") or []
+    if authors:
+        meta_lines.append("- **Authors:**")
+        meta_lines.extend([f"  - {a}" for a in authors])
+
+    affs = md.get("affiliations") or []
+    if affs:
+        meta_lines.append("- **Affiliations:**")
+        meta_lines.extend([f"  - {a}" for a in affs])
+
+    if meta_lines:
+        lines.extend(["## Metadata", "", *meta_lines, ""])
+
     if d.abstract:
         lines.extend(["## Abstract", "", d.abstract, ""])
 
