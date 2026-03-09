@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://papersearch.local/schemas/search.request.schema.json",
+  "title": "SearchRequest",
+  "type": "object",
+  "required": ["query"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 4000
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "year_from": { "type": "integer", "minimum": 1900, "maximum": 2100 },
+        "year_to": { "type": "integer", "minimum": 1900, "maximum": 2100 },
+        "sources": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 20
+        }
+      },
+      "additionalProperties": false
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 20
+    }
+  },
+  "additionalProperties": false
+}

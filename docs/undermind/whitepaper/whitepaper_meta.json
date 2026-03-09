@@ -1,0 +1,986 @@
+{
+  "table_of_contents": [
+    {
+      "title": "Benchmarking the Undermind Search Assistant",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          141.0,
+          94.0
+        ],
+        [
+          469.7578125,
+          94.0
+        ],
+        [
+          469.7578125,
+          110.98828125
+        ],
+        [
+          141.0,
+          110.98828125
+        ]
+      ]
+    },
+    {
+      "title": "Thomas Hartke and Joshua Ramette\nUndermind.ai",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          210.0,
+          134.19140625
+        ],
+        [
+          401.0,
+          134.19140625
+        ],
+        [
+          401.0,
+          162.80859375
+        ],
+        [
+          210.0,
+          162.80859375
+        ]
+      ]
+    },
+    {
+      "title": "Abstract",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          283.88671875,
+          208.0546875
+        ],
+        [
+          326.0,
+          208.0546875
+        ],
+        [
+          326.0,
+          217.0
+        ],
+        [
+          283.88671875,
+          217.0
+        ]
+      ]
+    },
+    {
+      "title": "1 Building an ideal search engine for scientists",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          85.0,
+          667.0
+        ],
+        [
+          424.0,
+          667.0
+        ],
+        [
+          424.0,
+          681.78515625
+        ],
+        [
+          85.0,
+          681.78515625
+        ]
+      ]
+    },
+    {
+      "title": "1.1 How it works",
+      "heading_level": null,
+      "page_id": 1,
+      "polygon": [
+        [
+          84.26953125,
+          156.62109375
+        ],
+        [
+          194.07041931152344,
+          156.62109375
+        ],
+        [
+          194.07041931152344,
+          168.88690185546875
+        ],
+        [
+          84.26953125,
+          168.88690185546875
+        ]
+      ]
+    },
+    {
+      "title": "2 Key metrics compared to Google Scholar",
+      "heading_level": null,
+      "page_id": 1,
+      "polygon": [
+        [
+          83.671875,
+          407.21484375
+        ],
+        [
+          399.7801818847656,
+          407.21484375
+        ],
+        [
+          399.7801818847656,
+          421.9902648925781
+        ],
+        [
+          83.671875,
+          421.9902648925781
+        ]
+      ]
+    },
+    {
+      "title": "2.1 Quantitative results",
+      "heading_level": null,
+      "page_id": 1,
+      "polygon": [
+        [
+          82.4765625,
+          590.7286071777344
+        ],
+        [
+          232.4824981689453,
+          590.7286071777344
+        ],
+        [
+          232.4824981689453,
+          602.6838073730469
+        ],
+        [
+          82.4765625,
+          602.6838073730469
+        ]
+      ]
+    },
+    {
+      "title": "2.2 Further advantages",
+      "heading_level": null,
+      "page_id": 2,
+      "polygon": [
+        [
+          83.970703125,
+          595.546875
+        ],
+        [
+          228.0,
+          595.546875
+        ],
+        [
+          228.0,
+          606.0
+        ],
+        [
+          83.970703125,
+          606.0
+        ]
+      ]
+    },
+    {
+      "title": "3 Appendix",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          84.26953125,
+          55.4439697265625
+        ],
+        [
+          178.07411193847656,
+          55.4439697265625
+        ],
+        [
+          178.07411193847656,
+          69.79022216796875
+        ],
+        [
+          84.26953125,
+          69.79022216796875
+        ]
+      ]
+    },
+    {
+      "title": "3.1 Distribution of real user searches on Undermind",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          84.8671875,
+          79.6640625
+        ],
+        [
+          400.4296875,
+          79.6640625
+        ],
+        [
+          400.4296875,
+          93.080810546875
+        ],
+        [
+          84.8671875,
+          93.080810546875
+        ]
+      ]
+    },
+    {
+      "title": "1. Examples of simpler queries",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          96.521484375,
+          252.140625
+        ],
+        [
+          231.6612548828125,
+          252.140625
+        ],
+        [
+          231.6612548828125,
+          262.4676513671875
+        ],
+        [
+          96.521484375,
+          262.4676513671875
+        ]
+      ]
+    },
+    {
+      "title": "2. Examples of more complex queries",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          96.22265625,
+          363.90234375
+        ],
+        [
+          260.6524353027344,
+          363.90234375
+        ],
+        [
+          260.6524353027344,
+          374.048583984375
+        ],
+        [
+          96.22265625,
+          374.048583984375
+        ]
+      ]
+    },
+    {
+      "title": "3.2 Benchmarking Undermind's relevance classification accuracy",
+      "heading_level": null,
+      "page_id": 5,
+      "polygon": [
+        [
+          85.03895568847656,
+          402.29461669921875
+        ],
+        [
+          472.4949035644531,
+          402.29461669921875
+        ],
+        [
+          472.4949035644531,
+          414.24981689453125
+        ],
+        [
+          85.03895568847656,
+          414.24981689453125
+        ]
+      ]
+    },
+    {
+      "title": "3.3 Methodology for generating keyword phrases for Google Scholar com-\nparison",
+      "heading_level": null,
+      "page_id": 5,
+      "polygon": [
+        [
+          83.671875,
+          639.8554840087891
+        ],
+        [
+          526.6640625,
+          639.8554840087891
+        ],
+        [
+          526.6640625,
+          665.7576904296875
+        ],
+        [
+          83.671875,
+          665.7576904296875
+        ]
+      ]
+    },
+    {
+      "title": "3.4 Measuring sparsity of relevant works within Google Scholar's top results",
+      "heading_level": null,
+      "page_id": 7,
+      "polygon": [
+        [
+          84.0,
+          597.0
+        ],
+        [
+          526.0,
+          597.0
+        ],
+        [
+          526.0,
+          621.0703125
+        ],
+        [
+          84.0,
+          621.0703125
+        ]
+      ]
+    },
+    {
+      "title": "3.5 Demonstrating exhaustiveness of Undermind's converged searches",
+      "heading_level": null,
+      "page_id": 8,
+      "polygon": [
+        [
+          83.671875,
+          96.29296875
+        ],
+        [
+          504.5947570800781,
+          96.29296875
+        ],
+        [
+          504.5947570800781,
+          109.11083984375
+        ],
+        [
+          83.671875,
+          109.11083984375
+        ]
+      ]
+    },
+    {
+      "title": "3.5.1 General outline of how to measure exhaustiveness",
+      "heading_level": null,
+      "page_id": 8,
+      "polygon": [
+        [
+          83.07421875,
+          116.015625
+        ],
+        [
+          371.14453125,
+          116.015625
+        ],
+        [
+          371.14453125,
+          127.0655517578125
+        ],
+        [
+          83.07421875,
+          127.0655517578125
+        ]
+      ]
+    },
+    {
+      "title": "3.5.2 Estimating Undermind's exhaustiveness by comparing to Google Scholar",
+      "heading_level": null,
+      "page_id": 8,
+      "polygon": [
+        [
+          84.8671875,
+          505.48590087890625
+        ],
+        [
+          485.32623291015625,
+          505.48590087890625
+        ],
+        [
+          485.32623291015625,
+          515.448486328125
+        ],
+        [
+          84.8671875,
+          515.448486328125
+        ]
+      ]
+    },
+    {
+      "title": "3.6 Measuring the total number of relevant papers in the top 50 Google\nScholar results",
+      "heading_level": null,
+      "page_id": 9,
+      "polygon": [
+        [
+          83.671875,
+          221.58984375
+        ],
+        [
+          526.6878051757812,
+          221.58984375
+        ],
+        [
+          526.6878051757812,
+          248.54595947265625
+        ],
+        [
+          83.671875,
+          248.54595947265625
+        ]
+      ]
+    }
+  ],
+  "page_stats": [
+    {
+      "page_id": 0,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Line",
+          73
+        ],
+        [
+          "Span",
+          21
+        ],
+        [
+          "SectionHeader",
+          4
+        ],
+        [
+          "Text",
+          4
+        ],
+        [
+          "Figure",
+          1
+        ],
+        [
+          "Caption",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 1,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          165
+        ],
+        [
+          "Line",
+          49
+        ],
+        [
+          "Text",
+          6
+        ],
+        [
+          "Reference",
+          5
+        ],
+        [
+          "ListItem",
+          4
+        ],
+        [
+          "SectionHeader",
+          3
+        ],
+        [
+          "Footnote",
+          3
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "ListGroup",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 2,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Line",
+          62
+        ],
+        [
+          "Span",
+          29
+        ],
+        [
+          "ListItem",
+          3
+        ],
+        [
+          "Reference",
+          3
+        ],
+        [
+          "Text",
+          2
+        ],
+        [
+          "Footnote",
+          2
+        ],
+        [
+          "Figure",
+          1
+        ],
+        [
+          "Caption",
+          1
+        ],
+        [
+          "SectionHeader",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "FigureGroup",
+          1
+        ],
+        [
+          "ListGroup",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 3,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          44
+        ],
+        [
+          "Line",
+          15
+        ],
+        [
+          "ListItem",
+          2
+        ],
+        [
+          "Text",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "ListGroup",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 4,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          136
+        ],
+        [
+          "Line",
+          51
+        ],
+        [
+          "Text",
+          12
+        ],
+        [
+          "SectionHeader",
+          4
+        ],
+        [
+          "Reference",
+          2
+        ],
+        [
+          "Footnote",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 5,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          144
+        ],
+        [
+          "Line",
+          39
+        ],
+        [
+          "Text",
+          6
+        ],
+        [
+          "Reference",
+          3
+        ],
+        [
+          "Figure",
+          2
+        ],
+        [
+          "SectionHeader",
+          2
+        ],
+        [
+          "Caption",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "FigureGroup",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 6,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          297
+        ],
+        [
+          "Line",
+          66
+        ],
+        [
+          "TableCell",
+          62
+        ],
+        [
+          "Text",
+          5
+        ],
+        [
+          "Table",
+          3
+        ],
+        [
+          "Caption",
+          2
+        ],
+        [
+          "TableGroup",
+          2
+        ],
+        [
+          "Reference",
+          2
+        ],
+        [
+          "PageFooter",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 7,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Line",
+          66
+        ],
+        [
+          "Span",
+          17
+        ],
+        [
+          "Text",
+          6
+        ],
+        [
+          "ListItem",
+          5
+        ],
+        [
+          "Reference",
+          2
+        ],
+        [
+          "Figure",
+          1
+        ],
+        [
+          "Caption",
+          1
+        ],
+        [
+          "SectionHeader",
+          1
+        ],
+        [
+          "Footnote",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "FigureGroup",
+          1
+        ],
+        [
+          "ListGroup",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 8,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          186
+        ],
+        [
+          "Line",
+          45
+        ],
+        [
+          "Text",
+          6
+        ],
+        [
+          "ListItem",
+          6
+        ],
+        [
+          "SectionHeader",
+          3
+        ],
+        [
+          "Reference",
+          3
+        ],
+        [
+          "ListGroup",
+          2
+        ],
+        [
+          "Equation",
+          1
+        ],
+        [
+          "Footnote",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 9,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          185
+        ],
+        [
+          "Line",
+          40
+        ],
+        [
+          "Text",
+          7
+        ],
+        [
+          "Equation",
+          2
+        ],
+        [
+          "Footnote",
+          2
+        ],
+        [
+          "Reference",
+          2
+        ],
+        [
+          "SectionHeader",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 10,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          66
+        ],
+        [
+          "Line",
+          16
+        ],
+        [
+          "Figure",
+          1
+        ],
+        [
+          "Caption",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "FigureGroup",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    }
+  ],
+  "debug_data_path": "debug_data/whitepaper"
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://papersearch.local/schemas/search.result.schema.json",
+  "title": "SearchResultPage",
+  "type": "object",
+  "required": ["search_id", "items"],
+  "properties": {
+    "search_id": { "type": "string", "minLength": 1 },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["paper_id", "title", "score", "relevance"],
+        "properties": {
+          "paper_id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "score": { "type": "number", "minimum": 0, "maximum": 1 },
+          "relevance": {
+            "type": "string",
+            "enum": ["highly_relevant", "closely_related", "ignorable"]
+          },
+          "why": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "next_cursor": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}
