@@ -6,6 +6,20 @@ from contextlib import contextmanager
 from typing import Iterable
 
 
+def _norm_doi(value: str | None) -> str | None:
+    if not value:
+        return None
+    v = str(value).strip().lower()
+    if v.startswith("https://doi.org/"):
+        v = v[len("https://doi.org/") :]
+    if v.startswith("http://doi.org/"):
+        v = v[len("http://doi.org/") :]
+    if v.startswith("doi:"):
+        v = v[4:].strip()
+    v = v.rstrip(" .,;)")
+    return v or None
+
+
 class Repo:
     def __init__(self, db_path: str | None = None) -> None:
         self.db_path = db_path or os.getenv("DB_PATH", "data/app.db")
@@ -68,6 +82,7 @@ class Repo:
                 CREATE TABLE IF NOT EXISTS api_papers (
                     paper_id TEXT PRIMARY KEY,
                     doi TEXT NOT NULL UNIQUE,
+                    doi_norm TEXT,
                     openalex_id TEXT,
                     citation_count INTEGER,
                     title TEXT NOT NULL,
@@ -83,6 +98,7 @@ class Repo:
                     src_paper_id TEXT NOT NULL,
                     ref_order INTEGER NOT NULL,
                     doi TEXT,
+                    doi_norm TEXT,
                     ref_openalex_id TEXT,
                     raw_text TEXT NOT NULL,
                     UNIQUE(src_paper_id, ref_order)
@@ -105,9 +121,17 @@ class Repo:
             )
             self._ensure_column(conn, "api_papers", "openalex_id", "TEXT")
             self._ensure_column(conn, "api_papers", "citation_count", "INTEGER")
+            self._ensure_column(conn, "api_papers", "doi_norm", "TEXT")
             self._ensure_column(conn, "api_references", "ref_openalex_id", "TEXT")
+            self._ensure_column(conn, "api_references", "doi_norm", "TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_api_refs_openalex ON api_references(ref_openalex_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_api_papers_openalex ON api_papers(openalex_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_papers_doi_norm ON api_papers(doi_norm)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_refs_doi_norm ON api_references(doi_norm)")
+
+            # Backfill normalized DOI columns (idempotent; only missing rows are updated)
+            conn.execute("UPDATE api_papers SET doi_norm = lower(trim(doi)) WHERE (doi_norm IS NULL OR trim(doi_norm) = '') AND doi IS NOT NULL AND trim(doi) != ''")
+            conn.execute("UPDATE api_references SET doi_norm = lower(trim(doi)) WHERE (doi_norm IS NULL OR trim(doi_norm) = '') AND doi IS NOT NULL AND trim(doi) != ''")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
         cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -185,13 +209,17 @@ class Repo:
             return cur.fetchone()
 
     def upsert_api_paper(self, row: dict) -> None:
+        row = dict(row)
+        row["doi"] = _norm_doi(row.get("doi")) or row.get("doi")
+        row["doi_norm"] = _norm_doi(row.get("doi"))
         with self._conn() as conn:
             conn.execute(
                 """
-                INSERT INTO api_papers(paper_id, doi, openalex_id, citation_count, title, year, venue, abstract, source, updated_at)
-                VALUES(:paper_id, :doi, :openalex_id, :citation_count, :title, :year, :venue, :abstract, :source, :updated_at)
+                INSERT INTO api_papers(paper_id, doi, doi_norm, openalex_id, citation_count, title, year, venue, abstract, source, updated_at)
+                VALUES(:paper_id, :doi, :doi_norm, :openalex_id, :citation_count, :title, :year, :venue, :abstract, :source, :updated_at)
                 ON CONFLICT(doi) DO UPDATE SET
                   paper_id=excluded.paper_id,
+                  doi_norm=excluded.doi_norm,
                   openalex_id=excluded.openalex_id,
                   citation_count=excluded.citation_count,
                   title=excluded.title,
@@ -205,8 +233,9 @@ class Repo:
             )
 
     def get_api_paper_by_doi(self, doi: str):
+        doi_norm = _norm_doi(doi)
         with self._conn() as conn:
-            cur = conn.execute("SELECT * FROM api_papers WHERE lower(doi)=lower(?)", (doi,))
+            cur = conn.execute("SELECT * FROM api_papers WHERE doi_norm = ?", (doi_norm,))
             return cur.fetchone()
 
     def find_api_papers_by_title_like(self, title: str, limit: int = 10) -> list[sqlite3.Row]:
@@ -266,17 +295,24 @@ class Repo:
         return [(str(r["src_paper_id"]), str(r["dst_paper_id"])) for r in rows]
 
     def replace_api_references(self, src_paper_id: str, refs: list[dict]) -> None:
+        rows = []
+        for r in refs:
+            x = dict(r)
+            x["doi"] = _norm_doi(x.get("doi")) or x.get("doi")
+            x["doi_norm"] = _norm_doi(x.get("doi"))
+            rows.append(x)
         with self._conn() as conn:
             conn.execute("DELETE FROM api_references WHERE src_paper_id = ?", (src_paper_id,))
             conn.executemany(
                 """
-                INSERT INTO api_references(src_paper_id, ref_order, doi, ref_openalex_id, raw_text)
-                VALUES(:src_paper_id, :ref_order, :doi, :ref_openalex_id, :raw_text)
+                INSERT INTO api_references(src_paper_id, ref_order, doi, doi_norm, ref_openalex_id, raw_text)
+                VALUES(:src_paper_id, :ref_order, :doi, :doi_norm, :ref_openalex_id, :raw_text)
                 """,
-                refs,
+                rows,
             )
 
     def resolve_edges_doi_match(self, now_iso: str) -> int:
+        """Full rebuild. Intended for offline maintenance, not online grow paths."""
         with self._conn() as conn:
             conn.execute("DELETE FROM citation_edges")
             conn.execute(
@@ -284,8 +320,8 @@ class Repo:
                 INSERT OR REPLACE INTO citation_edges(src_paper_id, dst_paper_id, confidence, edge_source, created_at)
                 SELECT r.src_paper_id, p.paper_id, 'high', 'doi_match', ?
                 FROM api_references r
-                JOIN api_papers p ON lower(r.doi)=lower(p.doi)
-                WHERE r.doi IS NOT NULL AND trim(r.doi) != ''
+                JOIN api_papers p ON r.doi_norm = p.doi_norm
+                WHERE r.doi_norm IS NOT NULL AND trim(r.doi_norm) != ''
                 """,
                 (now_iso,),
             )
@@ -300,6 +336,70 @@ class Repo:
                 (now_iso,),
             )
             cur = conn.execute("SELECT count(*) AS c FROM citation_edges")
+            return int(cur.fetchone()["c"])
+
+    def resolve_edges_for_src_paper(self, src_paper_id: str, now_iso: str) -> int:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM citation_edges WHERE src_paper_id = ?", (src_paper_id,))
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO citation_edges(src_paper_id, dst_paper_id, confidence, edge_source, created_at)
+                SELECT r.src_paper_id, p.paper_id, 'high', 'doi_match', ?
+                FROM api_references r
+                JOIN api_papers p ON r.doi_norm = p.doi_norm
+                WHERE r.src_paper_id = ?
+                  AND r.doi_norm IS NOT NULL
+                  AND trim(r.doi_norm) != ''
+                """,
+                (now_iso, src_paper_id),
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO citation_edges(src_paper_id, dst_paper_id, confidence, edge_source, created_at)
+                SELECT r.src_paper_id, p.paper_id, 'high', 'openalex_id_match', ?
+                FROM api_references r
+                JOIN api_papers p ON r.ref_openalex_id = p.openalex_id
+                WHERE r.src_paper_id = ?
+                  AND r.ref_openalex_id IS NOT NULL
+                  AND trim(r.ref_openalex_id) != ''
+                """,
+                (now_iso, src_paper_id),
+            )
+            cur = conn.execute("SELECT count(*) AS c FROM citation_edges WHERE src_paper_id = ?", (src_paper_id,))
+            return int(cur.fetchone()["c"])
+
+    def resolve_edges_for_src_papers(self, src_paper_ids: list[str], now_iso: str) -> int:
+        ids = [x for x in (src_paper_ids or []) if x]
+        if not ids:
+            return 0
+        placeholders = ",".join(["?"] * len(ids))
+        with self._conn() as conn:
+            conn.execute(f"DELETE FROM citation_edges WHERE src_paper_id IN ({placeholders})", ids)
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO citation_edges(src_paper_id, dst_paper_id, confidence, edge_source, created_at)
+                SELECT r.src_paper_id, p.paper_id, 'high', 'doi_match', ?
+                FROM api_references r
+                JOIN api_papers p ON r.doi_norm = p.doi_norm
+                WHERE r.src_paper_id IN ({placeholders})
+                  AND r.doi_norm IS NOT NULL
+                  AND trim(r.doi_norm) != ''
+                """,
+                [now_iso] + ids,
+            )
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO citation_edges(src_paper_id, dst_paper_id, confidence, edge_source, created_at)
+                SELECT r.src_paper_id, p.paper_id, 'high', 'openalex_id_match', ?
+                FROM api_references r
+                JOIN api_papers p ON r.ref_openalex_id = p.openalex_id
+                WHERE r.src_paper_id IN ({placeholders})
+                  AND r.ref_openalex_id IS NOT NULL
+                  AND trim(r.ref_openalex_id) != ''
+                """,
+                [now_iso] + ids,
+            )
+            cur = conn.execute(f"SELECT count(*) AS c FROM citation_edges WHERE src_paper_id IN ({placeholders})", ids)
             return int(cur.fetchone()["c"])
 
     def get_graph_stats(self) -> dict:
@@ -435,14 +535,14 @@ class Repo:
         with self._conn() as conn:
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT lower(r.doi) AS doi
+                SELECT DISTINCT r.doi_norm AS doi
                 FROM api_references r
-                LEFT JOIN api_papers p ON lower(r.doi) = lower(p.doi)
+                LEFT JOIN api_papers p ON r.doi_norm = p.doi_norm
                 WHERE r.src_paper_id IN ({placeholders})
-                  AND r.doi IS NOT NULL
-                  AND trim(r.doi) != ''
+                  AND r.doi_norm IS NOT NULL
+                  AND trim(r.doi_norm) != ''
                   AND p.paper_id IS NULL
-                ORDER BY doi
+                ORDER BY r.doi_norm
                 LIMIT ?
                 """,
                 params,

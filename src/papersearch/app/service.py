@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 import re
 import time
@@ -68,6 +69,32 @@ def _is_likely_doi(value: str | None) -> bool:
     if not v:
         return False
     return bool(re.match(r"^10\.\d{4,9}/\S+$", v))
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        if v is None:
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _year_from_any(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value if 1800 <= value <= 2200 else None
+    s = str(value).strip()
+    if len(s) >= 4 and s[:4].isdigit():
+        y = int(s[:4])
+        if 1800 <= y <= 2200:
+            return y
+    return None
+
+
+def _ms_since(t0: float) -> int:
+    return int((time.perf_counter() - t0) * 1000)
 
 
 def _parse_json_object(text: str | None) -> dict | None:
@@ -1012,6 +1039,7 @@ class AppService:
         return meta
 
     def run_search(self, run_id: str, **kwargs) -> dict:
+        t0 = time.perf_counter()
         meta = self.run_manager.read_json(run_id, "meta.json")
         prompt = kwargs.pop("prompt", None) or meta.get("query") or ""
         crossref_rows = int(kwargs.get("crossref_rows", 30))
@@ -1038,11 +1066,19 @@ class AppService:
             input_payload={"prompt": prompt, **kwargs},
             output_file="search.json",
             summary=f"new_paper_count={out.get('new_paper_count', 0)} pool_size={pool_stats.get('pool_size', 0)}",
-            meta={"pool": pool_stats},
+            meta={
+                "pool": pool_stats,
+                "perf": {
+                    "duration_ms": _ms_since(t0),
+                    "new_paper_count": int(out.get("new_paper_count") or 0),
+                    "crossref_rows": crossref_rows,
+                },
+            },
         )
         return out
 
     def run_classify(self, run_id: str, **kwargs) -> dict:
+        t0 = time.perf_counter()
         meta = self.run_manager.read_json(run_id, "meta.json")
         topic = kwargs.pop("topic", None) or meta.get("query") or ""
         query_id = kwargs.pop("query_id", None)
@@ -1069,12 +1105,23 @@ class AppService:
 
         enrich_abstract_max = int(kwargs.pop("enrich_abstract_max", 20))
         enrich_workers = int(kwargs.pop("enrich_workers", 4))
+        enrich_stats = {
+            "attempted": 0,
+            "before_with_abstract": 0,
+            "after_with_abstract": 0,
+            "duration_ms": 0,
+        }
         if candidates is not None:
+            enrich_stats["attempted"] = len(candidates)
+            enrich_stats["before_with_abstract"] = sum(1 for x in candidates if (x.get("abstract") or x.get("full_text") or "").strip())
+            t_enrich = time.perf_counter()
             candidates = self._enrich_candidates_with_abstracts(
                 candidates,
                 max_fetch=enrich_abstract_max,
                 max_workers=enrich_workers,
             )
+            enrich_stats["duration_ms"] = _ms_since(t_enrich)
+            enrich_stats["after_with_abstract"] = sum(1 for x in candidates if (x.get("abstract") or x.get("full_text") or "").strip())
             self.run_manager.upsert_pool(run_id, papers=candidates, source_op="classify_enrich")
 
         out = self.op_classify(topic=topic, query_id=query_id, candidates=candidates, **kwargs)
@@ -1086,6 +1133,14 @@ class AppService:
             input_payload={"topic": topic, "query_id": query_id, "used_pool_candidates": candidates is not None, **kwargs},
             output_file="classify.json",
             summary=f"items_classified={out.get('items_classified', 0)}",
+            meta={
+                "perf": {
+                    "duration_ms": _ms_since(t0),
+                    "items_classified": int(out.get("items_classified") or 0),
+                    "non_classifiable": int((out.get("counts") or {}).get("non_classifiable") or 0),
+                    "enrich": enrich_stats,
+                }
+            },
         )
         return out
 
@@ -1194,6 +1249,7 @@ class AppService:
         return list(dict.fromkeys(seeds))
 
     def run_grow(self, run_id: str, levels: int = 2, limit_per_node: int = 30, use_mock: bool = False, fallback_seed_max: int = 5) -> dict:
+        t0 = time.perf_counter()
         seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
         out = self.op_grow(seeds=seeds, levels=levels, limit_per_node=limit_per_node, use_mock=use_mock)
         self.run_manager.write_json(run_id, "grow.json", out)
@@ -1221,11 +1277,21 @@ class AppService:
             input_payload={"seeds": seeds, "levels": levels, "limit_per_node": limit_per_node},
             output_file="grow.json",
             summary=f"total_discovered_unique={out.get('total_discovered_unique', 0)} pool_size={pool_stats.get('pool_size', 0)}",
-            meta={"pool": pool_stats},
+            meta={
+                "pool": pool_stats,
+                "perf": {
+                    "duration_ms": _ms_since(t0),
+                    "seed_count": len(seeds),
+                    "levels": levels,
+                    "limit_per_node": limit_per_node,
+                    "total_discovered_unique": int(out.get("total_discovered_unique") or 0),
+                },
+            },
         )
         return out
 
     def run_rank(self, run_id: str, limit: int = 20, fallback_seed_max: int = 5) -> dict:
+        t0 = time.perf_counter()
         seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
         for d in seeds[:8]:
             try:
@@ -1248,10 +1314,253 @@ class AppService:
             input_payload={"seeds": seeds, "limit": limit},
             output_file="rank.json",
             summary=f"rank_items={len(out.get('items') or [])}",
+            meta={
+                "perf": {
+                    "duration_ms": _ms_since(t0),
+                    "seed_count": len(seeds),
+                    "rank_items": len(out.get("items") or []),
+                }
+            },
+        )
+        return out
+
+    def run_score(self, run_id: str) -> dict:
+        t0 = time.perf_counter()
+        pool_rows = self.run_manager.list_pool_papers(run_id)
+        classify = self.run_manager._try_read(run_id, "classify.json") or {}
+        rank = self.run_manager._try_read(run_id, "rank.json") or {}
+
+        def _pid_from_row(x: dict) -> str:
+            d = _normalize_doi(x.get("doi"))
+            pid = (x.get("paper_id") or "").strip().lower()
+            if pid:
+                return pid
+            if d:
+                return f"doi:{d}"
+            t = (x.get("title") or "").strip().lower()
+            return f"title:{hashlib.sha256(t.encode('utf-8')).hexdigest()[:16]}" if t else ""
+
+        cls_by_pid: dict[str, dict] = {}
+        cls_by_doi: dict[str, dict] = {}
+        cls_by_title: dict[str, dict] = {}
+        for it in classify.get("items", []) or []:
+            pid = _pid_from_row(it)
+            doi = _normalize_doi(it.get("doi"))
+            title = _normalize_text(it.get("title"))
+            if pid:
+                cls_by_pid[pid] = it
+            if doi:
+                cls_by_doi[doi] = it
+            if title:
+                cls_by_title[title] = it
+
+        pr_by_pid: dict[str, dict] = {}
+        pr_by_doi: dict[str, dict] = {}
+        for it in rank.get("items", []) or []:
+            pid = _pid_from_row(it)
+            doi = _normalize_doi(it.get("doi"))
+            if pid:
+                pr_by_pid[pid] = it
+            if doi:
+                pr_by_doi[doi] = it
+
+        paper_ids = [str((r.get("paper_id") or "")).strip().lower() for r in pool_rows if (r.get("paper_id") or "").strip()]
+        meta_rows = self.repo.get_api_papers_by_ids(list(dict.fromkeys(paper_ids)))
+        meta_map = {str(m.get("paper_id") or "").strip().lower(): m for m in meta_rows}
+
+        rel_map = {
+            "highly_relevant": 1.0,
+            "closely_related": 0.7,
+            "ignorable": 0.1,
+            "non_classifiable": 0.0,
+        }
+
+        raw_rows: list[dict] = []
+        for p in pool_rows:
+            pid = _pid_from_row(p)
+            doi = _normalize_doi(p.get("doi"))
+            title_key = _normalize_text(p.get("title"))
+
+            c = cls_by_pid.get(pid) or (cls_by_doi.get(doi) if doi else None) or (cls_by_title.get(title_key) if title_key else None)
+            r = pr_by_pid.get(pid) or (pr_by_doi.get(doi) if doi else None)
+            m = meta_map.get(pid, {})
+
+            label = (c or {}).get("label") or "non_classifiable"
+            rel_score = rel_map.get(label, 0.0)
+            pr_score_raw = _safe_float((r or {}).get("score"), 0.0)
+            citation_count = int(_safe_float(m.get("citation_count"), 0.0)) if m.get("citation_count") is not None else 0
+            cite_log = math.log1p(max(citation_count, 0))
+
+            y = _year_from_any(m.get("year")) or _year_from_any(p.get("publication_date")) or _year_from_any((c or {}).get("publication_date"))
+
+            raw_rows.append(
+                {
+                    "paper_id": pid,
+                    "doi": doi,
+                    "title": p.get("title") or (m.get("title") if m else "") or "",
+                    "journal": p.get("journal") or (m.get("venue") if m else "") or "",
+                    "publication_date": p.get("publication_date") or (c or {}).get("publication_date"),
+                    "year": y,
+                    "citation_count": citation_count,
+                    "pagerank_score": pr_score_raw,
+                    "classification_label": label,
+                    "classification_reason": (c or {}).get("reason") or "",
+                    "relevance_score": rel_score,
+                    "source": p.get("source") or "",
+                    "seen_in_ops": p.get("seen_in_ops") or [],
+                    "_cite_log": cite_log,
+                }
+            )
+
+        def _norm(values: list[float], fallback: float = 0.0) -> dict[float, float]:
+            if not values:
+                return {}
+            lo, hi = min(values), max(values)
+            if hi <= lo:
+                return {v: fallback for v in values}
+            return {v: (v - lo) / (hi - lo) for v in values}
+
+        pr_norm_map = _norm([r["pagerank_score"] for r in raw_rows], fallback=0.0)
+        cite_norm_map = _norm([r["_cite_log"] for r in raw_rows], fallback=0.0)
+        year_vals = [float(r["year"]) for r in raw_rows if r.get("year") is not None]
+        year_norm_map = _norm(year_vals, fallback=0.5)
+
+        rows: list[dict] = []
+        for r in raw_rows:
+            year_norm = 0.5
+            if r.get("year") is not None and year_norm_map:
+                year_norm = year_norm_map.get(float(r["year"]), 0.5)
+
+            score = (
+                0.4 * r["relevance_score"]
+                + 0.3 * pr_norm_map.get(r["pagerank_score"], 0.0)
+                + 0.2 * cite_norm_map.get(r["_cite_log"], 0.0)
+                + 0.1 * year_norm
+            )
+
+            row = {
+                "paper_id": r["paper_id"],
+                "doi": r["doi"],
+                "title": r["title"],
+                "journal": r["journal"],
+                "publication_date": r["publication_date"],
+                "year": r["year"],
+                "citation_count": r["citation_count"],
+                "pagerank_score": round(r["pagerank_score"], 8),
+                "classification_label": r["classification_label"],
+                "classification_reason": r["classification_reason"],
+                "component_scores": {
+                    "relevance": round(r["relevance_score"], 4),
+                    "pagerank_norm": round(pr_norm_map.get(r["pagerank_score"], 0.0), 4),
+                    "citation_norm": round(cite_norm_map.get(r["_cite_log"], 0.0), 4),
+                    "year_norm": round(year_norm, 4),
+                },
+                "influence_score": round(score, 6),
+                "source": r["source"],
+                "seen_in_ops": r["seen_in_ops"],
+            }
+            rows.append(row)
+
+        rows.sort(key=lambda x: (x.get("influence_score") or 0.0), reverse=True)
+
+        out = {
+            "run_id": run_id,
+            "weights": {"relevance": 0.4, "pagerank_norm": 0.3, "citation_norm": 0.2, "year_norm": 0.1},
+            "count": len(rows),
+            "items": rows,
+        }
+        self.run_manager.write_json(run_id, "pool_scored.json", out)
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="score",
+            status="ok",
+            input_payload={"weights": out["weights"]},
+            output_file="pool_scored.json",
+            summary=f"scored_items={len(rows)}",
+            meta={"perf": {"duration_ms": _ms_since(t0), "scored_items": len(rows)}},
+        )
+        return out
+
+    def run_diagnostics(self, run_id: str) -> dict:
+        history_path = self.run_manager.run_dir(run_id) / "history.jsonl"
+        events = []
+        if history_path.exists():
+            for line in history_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    events.append(json.loads(s))
+                except Exception:
+                    continue
+
+        stage_ms: dict[str, int] = {}
+        for e in events:
+            op = (e.get("op") or "").strip()
+            perf = ((e.get("meta") or {}).get("perf") or {})
+            ms = int(_safe_float(perf.get("duration_ms"), 0.0))
+            if op and ms > 0:
+                stage_ms[op] = stage_ms.get(op, 0) + ms
+
+        ordered = sorted(stage_ms.items(), key=lambda x: x[1], reverse=True)
+        top = [{"op": op, "duration_ms": ms} for op, ms in ordered[:5]]
+
+        classify = self.run_manager._try_read(run_id, "classify.json") or {}
+        grow = self.run_manager._try_read(run_id, "grow.json") or {}
+        rank = self.run_manager._try_read(run_id, "rank.json") or {}
+
+        suggestions: list[str] = []
+        if ordered:
+            top_op, _top_ms = ordered[0]
+            suggestions.append(f"Primary bottleneck currently appears to be '{top_op}'.")
+
+        non_cls = int((classify.get("counts") or {}).get("non_classifiable") or 0)
+        cls_n = int(classify.get("items_classified") or 0)
+        if cls_n > 0 and (non_cls / cls_n) >= 0.3:
+            suggestions.append("High non_classifiable rate: prioritize abstract-available candidates and lower classify top_k in fast mode.")
+
+        grow_levels = len((grow.get("results") or []))
+        grow_discovered = int(grow.get("total_discovered_unique") or 0)
+        if grow_discovered > 500 or grow_levels >= 2:
+            suggestions.append("Grow is large: reduce limit_per_node or fallback_seed_max; consider 1-hop for fast exploratory runs.")
+
+        rank_items = len((rank.get("items") or []))
+        if rank_items >= 50:
+            suggestions.append("Rank result set is wide: lower rank limit for faster report cycles.")
+
+        if not suggestions:
+            suggestions.append("No obvious single bottleneck found. Collect more runs and compare stage durations across runs.")
+
+        out = {
+            "run_id": run_id,
+            "stage_durations_ms": stage_ms,
+            "total_tracked_ms": int(sum(stage_ms.values())),
+            "top_bottlenecks": top,
+            "speedup_suggestions": suggestions,
+            "inputs": {
+                "classify_items": cls_n,
+                "classify_non_classifiable": non_cls,
+                "grow_levels": grow_levels,
+                "grow_total_discovered_unique": grow_discovered,
+                "rank_items": rank_items,
+            },
+        }
+
+        self.run_manager.write_json(run_id, "perf.json", out)
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="diagnostics",
+            status="ok",
+            input_payload={},
+            output_file="perf.json",
+            summary=f"tracked_stage_count={len(stage_ms)}",
         )
         return out
 
     def run_report(self, run_id: str) -> dict:
+        t0 = time.perf_counter()
+        self.run_score(run_id)
+        self.run_diagnostics(run_id)
         out = self.run_manager.compile_report(run_id=run_id)
         self.run_manager.append_event(
             run_id=run_id,
@@ -1260,6 +1569,7 @@ class AppService:
             input_payload={},
             output_file="report.json",
             summary="compiled report.md + report.json",
+            meta={"perf": {"duration_ms": _ms_since(t0)}},
         )
         return out
 
@@ -1439,7 +1749,7 @@ class AppService:
         ]
 
         self.repo.replace_api_references(src_paper_id=paper_id, refs=refs)
-        edge_count = self.repo.resolve_edges_doi_match(now_iso=now)
+        edge_count = self.repo.resolve_edges_for_src_paper(src_paper_id=paper_id, now_iso=now)
 
         return {
             "paper_id": paper_id,
@@ -1459,6 +1769,18 @@ class AppService:
 
     def graph_stats(self) -> dict:
         return self.repo.get_graph_stats()
+
+    def graph_maintenance_full_resolve(self) -> dict:
+        """Offline maintenance placeholder: full global edge consistency rebuild."""
+        t0 = time.perf_counter()
+        now = _now_iso()
+        edge_count = self.repo.resolve_edges_doi_match(now_iso=now)
+        return {
+            "operation": "graph_maintenance_full_resolve",
+            "edge_count": edge_count,
+            "duration_ms": _ms_since(t0),
+            "graph_stats": self.repo.get_graph_stats(),
+        }
 
     def graph_ingest_openalex_journals(self, journals: list[str], per_journal: int = 10) -> dict:
         journals = [j.strip() for j in journals if j and j.strip()]
@@ -1481,6 +1803,7 @@ class AppService:
             works = oa.works_by_source(sid, max_results=per_journal)
             p_ingested = 0
             r_ingested = 0
+            src_pids: list[str] = []
 
             for w in works:
                 doi = _normalize_doi(w.get("doi"))
@@ -1521,19 +1844,23 @@ class AppService:
                         }
                     )
                 self.repo.replace_api_references(src_paper_id=pid, refs=refs)
+                src_pids.append(pid)
                 r_ingested += len(refs)
+
+            if src_pids:
+                self.repo.resolve_edges_for_src_papers(src_paper_ids=src_pids, now_iso=now)
 
             total_papers += p_ingested
             total_refs += r_ingested
             summary.append({"journal": journal, "source_id": sid, "papers_ingested": p_ingested, "references_ingested": r_ingested, "error": None})
 
-        edge_count = self.repo.resolve_edges_doi_match(now_iso=now)
+        graph_stats = self.repo.get_graph_stats()
         return {
             "journals": summary,
             "total_papers_ingested": total_papers,
             "total_references_ingested": total_refs,
-            "edge_count": edge_count,
-            "graph_stats": self.repo.get_graph_stats(),
+            "edge_count": graph_stats.get("edge_count"),
+            "graph_stats": graph_stats,
         }
 
     def graph_backfill_openalex_journal(self, journal: str, max_results: int | None = None, per_page: int = 200) -> dict:
@@ -1551,6 +1878,7 @@ class AppService:
         skipped_no_doi = 0
         refs_ingested = 0
         processed = 0
+        src_pids: list[str] = []
 
         error = None
         try:
@@ -1594,6 +1922,7 @@ class AppService:
                             }
                         )
                     self.repo.replace_api_references(src_paper_id=pid, refs=refs)
+                    src_pids.append(pid)
                     refs_ingested += len(refs)
                     ingested += 1
 
@@ -1602,7 +1931,9 @@ class AppService:
         except ProviderError as e:
             error = str(e)
 
-        edge_count = self.repo.resolve_edges_doi_match(now_iso=now)
+        if src_pids:
+            self.repo.resolve_edges_for_src_papers(src_paper_ids=src_pids, now_iso=now)
+        graph_stats = self.repo.get_graph_stats()
         return {
             "journal": journal,
             "source_id": sid,
@@ -1610,9 +1941,9 @@ class AppService:
             "papers_processed": processed,
             "papers_skipped_no_doi": skipped_no_doi,
             "references_ingested": refs_ingested,
-            "edge_count": edge_count,
+            "edge_count": graph_stats.get("edge_count"),
             "error": error,
-            "graph_stats": self.repo.get_graph_stats(),
+            "graph_stats": graph_stats,
         }
 
     def graph_expand(
