@@ -85,9 +85,9 @@ def run_command(svc: AppService, command: str, args: dict[str, Any]) -> dict[str
             query_id=str(args["query_id"]),
             top_k=int(args.get("top_k", 20)),
             sort=str(args.get("sort", "RelevanceScore")),
-            provider=args.get("provider", "openai-codex"),
-            model=args.get("model", "gpt-5.1-codex-mini"),
-            thinking=args.get("thinking", "none"),
+            provider=args.get("provider", "zai"),
+            model=args.get("model", "glm-4.5-flash"),
+            thinking=args.get("thinking", "off"),
             max_workers=int(args.get("max_workers", 2)),
         )
     if command == "op-search":
@@ -111,9 +111,9 @@ def run_command(svc: AppService, command: str, args: dict[str, Any]) -> dict[str
             query_id=str(args["query_id"]),
             top_k=int(args.get("top_k", 20)),
             sort=str(args.get("sort", "RelevanceScore")),
-            provider=args.get("provider", "openai-codex"),
-            model=args.get("model", "gpt-5.1-codex-mini"),
-            thinking=args.get("thinking", "none"),
+            provider=args.get("provider", "zai"),
+            model=args.get("model", "glm-4.5-flash"),
+            thinking=args.get("thinking", "off"),
             max_workers=int(args.get("max_workers", 2)),
         )
     if command == "op-grow":

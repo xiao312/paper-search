@@ -222,9 +222,9 @@ TOOLS: list[dict[str, Any]] = [
                 "query_id": {"type": "string", "minLength": 1},
                 "top_k": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
                 "sort": {"type": "string", "default": "RelevanceScore"},
-                "provider": {"type": "string", "default": "openai-codex"},
-                "model": {"type": "string", "default": "gpt-5.1-codex-mini"},
-                "thinking": {"type": "string", "default": "none"},
+                "provider": {"type": "string", "default": "zai"},
+                "model": {"type": "string", "default": "glm-4.5-flash"},
+                "thinking": {"type": "string", "default": "off"},
                 "max_workers": {"type": "integer", "minimum": 1, "maximum": 8, "default": 2}
             },
             "additionalProperties": False,

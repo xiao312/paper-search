@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from papersearch.app.repository import Repo
@@ -31,6 +32,46 @@ class TestOperationsRefactor(unittest.TestCase):
         out = self.svc.op_classify(topic="ammonia combustion", candidates=[{"doi": "10.1/a", "title": "A", "abstract": ""}], top_k=1)
         self.assertEqual(out["operation"], "relevance_classification")
         self.assertEqual(out["counts"]["non_classifiable"], 1)
+
+    def test_enrich_candidates_prefers_elsevier(self):
+        xml = "<root><abstract><para>Elsevier abstract text.</para></abstract></root>"
+        with patch("papersearch.app.service.ElsevierFullTextClient.fetch_xml_by_doi", return_value=(xml, {"status": 200, "view": "META_ABS"})), patch(
+            "papersearch.app.service.OpenAlexClient.work_by_doi",
+            side_effect=AssertionError("OpenAlex should not be called when Elsevier abstract exists"),
+        ):
+            out = self.svc._enrich_candidates_with_abstracts([{"doi": "10.1016/j.fuel.2026.138904", "title": "A", "abstract": ""}], max_fetch=1, max_workers=1)
+
+        self.assertEqual(out[0]["abstract"], "Elsevier abstract text.")
+        self.assertEqual(out[0]["abstract_source"], "elsevier")
+        self.assertEqual(out[0]["abstract_status"], "ok")
+
+    def test_enrich_candidates_fallback_openalex(self):
+        with patch("papersearch.app.service.ElsevierFullTextClient.fetch_xml_by_doi", return_value=(None, {"status": 404, "error": "not found"})), patch(
+            "papersearch.app.service.OpenAlexClient.work_by_doi",
+            return_value={"abstract": "OpenAlex abstract text.", "venue": "Fuel", "year": 2024, "error": None},
+        ):
+            out = self.svc._enrich_candidates_with_abstracts([{"doi": "10.1080/00102209708935722", "title": "B", "abstract": ""}], max_fetch=1, max_workers=1)
+
+        self.assertEqual(out[0]["abstract"], "OpenAlex abstract text.")
+        self.assertEqual(out[0]["abstract_source"], "openalex")
+        self.assertEqual(out[0]["abstract_status"], "ok")
+        self.assertEqual(out[0]["journal"], "Fuel")
+        self.assertEqual(out[0]["publication_date"], "2024-01-01")
+
+    def test_llm_prompt_forces_zai_and_non_none_thinking(self):
+        with patch(
+            "papersearch.app.service.PiMonoClient.prompt",
+            return_value=SimpleNamespace(ok=True, stdout='{"label":"closely_related","reason":"ok"}', stderr="", returncode=0, command=["pi"]),
+        ) as m:
+            out = self.svc.llm_prompt(prompt="hello", provider="openai-codex", model="gpt-5.1-codex-mini", thinking="none")
+
+        kwargs = m.call_args.kwargs
+        self.assertEqual(kwargs["provider"], "zai")
+        self.assertEqual(kwargs["model"], "glm-4.5-flash")
+        self.assertEqual(kwargs["thinking"], "off")
+        self.assertEqual(out["provider"], "zai")
+        self.assertEqual(out["model"], "glm-4.5-flash")
+        self.assertEqual(out["thinking"], "off")
 
     def test_op_grow(self):
         now = "2026-01-01T00:00:00Z"

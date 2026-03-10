@@ -5,6 +5,7 @@ import json
 import random
 import re
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -12,13 +13,21 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from papersearch.app.repository import Repo
+from papersearch.app.run_manager import RunManager
 from papersearch.adapters.feishu.notifier import FeishuNotifier
 from papersearch.ingest.discovery_bohrium import BohriumSigmaSearchClient
 from papersearch.ingest.discovery_crossref import CrossrefClient
 from papersearch.ingest.discovery_openalex import OpenAlexClient
 from papersearch.ingest.errors import ProviderError
+from papersearch.ingest.fetch_elsevier_xml import ElsevierFullTextClient
 from papersearch.ingest.pipeline import ingest_doi
+from papersearch.ingest.xml_extractors import extract_abstract
 from papersearch.integrations.pi_mono_client import PiMonoClient
+
+
+DEFAULT_LLM_PROVIDER = "zai"
+DEFAULT_LLM_MODEL = "glm-4.5-flash"
+DEFAULT_LLM_THINKING = "off"
 
 
 def _now_iso() -> str:
@@ -52,6 +61,13 @@ def _extract_doi(text: str | None) -> str | None:
         return None
     m = re.search(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", text, flags=re.I)
     return _normalize_doi(m.group(0)) if m else None
+
+
+def _is_likely_doi(value: str | None) -> bool:
+    v = _normalize_doi(value)
+    if not v:
+        return False
+    return bool(re.match(r"^10\.\d{4,9}/\S+$", v))
 
 
 def _parse_json_object(text: str | None) -> dict | None:
@@ -130,9 +146,10 @@ def _merge_reference_rows(base_refs: list[dict], extra_refs: list[dict]) -> list
 
 
 class AppService:
-    def __init__(self, repo: Optional[Repo] = None, notifier: Optional[FeishuNotifier] = None):
+    def __init__(self, repo: Optional[Repo] = None, notifier: Optional[FeishuNotifier] = None, run_manager: Optional[RunManager] = None):
         self.repo = repo or Repo()
         self.notifier = notifier
+        self.run_manager = run_manager or RunManager()
 
     def start_search(self, query: str, limit: int = 20) -> dict:
         if not query or len(query.strip()) < 3:
@@ -266,13 +283,36 @@ class AppService:
         client = BohriumSigmaSearchClient(access_key=access_key)
         return client.question_papers(query_id=query_id, sort=sort, access_key=access_key)
 
+    def _resolve_llm_config(
+        self,
+        provider: str | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+    ) -> tuple[str, str, str]:
+        p = (provider or "").strip().lower() or DEFAULT_LLM_PROVIDER
+        m = (model or "").strip() or DEFAULT_LLM_MODEL
+        t = (thinking or "").strip().lower() or DEFAULT_LLM_THINKING
+
+        # Hard policy: never use OpenAI provider/models in this project runtime.
+        if p.startswith("openai") or m.lower().startswith("gpt-"):
+            p = DEFAULT_LLM_PROVIDER
+            m = DEFAULT_LLM_MODEL
+
+        if t == "none":
+            t = "off"
+        if t not in ("off", "minimal", "low", "medium", "high", "xhigh"):
+            t = DEFAULT_LLM_THINKING
+
+        return p, m, t
+
     def llm_list_models(self, provider: str | None = None, search: str | None = None) -> dict:
+        provider_resolved, _, _ = self._resolve_llm_config(provider=provider, model=None, thinking=None)
         client = PiMonoClient()
-        out = client.list_models(provider=provider, search=search)
+        out = client.list_models(provider=provider_resolved, search=search)
         lines = [x for x in out.stdout.splitlines() if x.strip()]
         return {
             "ok": out.ok,
-            "provider": provider,
+            "provider": provider_resolved,
             "search": search,
             "model_lines": lines,
             "stdout": out.stdout,
@@ -288,13 +328,14 @@ class AppService:
         model: str | None = None,
         thinking: str | None = None,
     ) -> dict:
+        provider_resolved, model_resolved, thinking_resolved = self._resolve_llm_config(provider=provider, model=model, thinking=thinking)
         client = PiMonoClient()
-        out = client.prompt(prompt=prompt, provider=provider, model=model, thinking=thinking)
+        out = client.prompt(prompt=prompt, provider=provider_resolved, model=model_resolved, thinking=thinking_resolved)
         return {
             "ok": out.ok,
-            "provider": provider,
-            "model": model,
-            "thinking": thinking,
+            "provider": provider_resolved,
+            "model": model_resolved,
+            "thinking": thinking_resolved,
             "response": out.stdout,
             "stderr": out.stderr,
             "returncode": out.returncode,
@@ -480,7 +521,15 @@ class AppService:
             typ = (it.get("type") or "").strip().lower()
             if typ and typ not in allowed_types:
                 continue
-            text = f"{it.get('title') or ''} {it.get('journal') or ''}".lower()
+            title = (it.get("title") or "").strip()
+            if not title or len(title) > 320:
+                continue
+            bad_frag = ("journal vol", "page ", "view download", "authors:", "doi no:")
+            ttl = title.lower()
+            if any(b in ttl for b in bad_frag):
+                continue
+
+            text = f"{title} {it.get('journal') or ''}".lower()
             hit = any(t in text for t in topic_terms)
             if not hit:
                 continue
@@ -812,9 +861,9 @@ class AppService:
         query_id: str | None = None,
         top_k: int = 20,
         sort: str = "RelevanceScore",
-        provider: str | None = "openai-codex",
-        model: str | None = "gpt-5.1-codex-mini",
-        thinking: str | None = "none",
+        provider: str | None = DEFAULT_LLM_PROVIDER,
+        model: str | None = DEFAULT_LLM_MODEL,
+        thinking: str | None = DEFAULT_LLM_THINKING,
         max_workers: int = 2,
     ) -> dict:
         topic = (topic or "").strip()
@@ -957,15 +1006,272 @@ class AppService:
             "total_discovered_unique": len(visited),
         }
 
+    def run_start(self, query: str) -> dict:
+        meta = self.run_manager.start_run(query=query)
+        self.run_manager.append_event(run_id=meta["run_id"], op="run_start", status="ok", input_payload={"query": query})
+        return meta
+
+    def run_search(self, run_id: str, **kwargs) -> dict:
+        meta = self.run_manager.read_json(run_id, "meta.json")
+        prompt = kwargs.pop("prompt", None) or meta.get("query") or ""
+        crossref_rows = int(kwargs.get("crossref_rows", 30))
+        out = self.op_search(prompt=prompt, **kwargs)
+
+        # Always include crossref results in run-level search pool/output (not only top-up fallback)
+        add_cr, cr_meta = self._topup_seeds_from_crossref(
+            query=prompt,
+            expanded_query=((out.get("raw") or {}).get("expanded_query") or ""),
+            rows=max(5, min(crossref_rows, 100)),
+            top_k=max(int(out.get("new_paper_count") or 0), int(kwargs.get("top_k", 20))),
+        )
+        merged = self._merge_unique_seeds(out.get("new_papers") or [], add_cr, limit=500)
+        out["new_papers"] = merged
+        out["new_paper_count"] = len(merged)
+        out.setdefault("search_meta", {})["crossref_always"] = cr_meta
+
+        self.run_manager.write_json(run_id, "search.json", out)
+        pool_stats = self.run_manager.upsert_pool(run_id, papers=out.get("new_papers") or [], source_op="search")
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="search",
+            status="ok",
+            input_payload={"prompt": prompt, **kwargs},
+            output_file="search.json",
+            summary=f"new_paper_count={out.get('new_paper_count', 0)} pool_size={pool_stats.get('pool_size', 0)}",
+            meta={"pool": pool_stats},
+        )
+        return out
+
+    def run_classify(self, run_id: str, **kwargs) -> dict:
+        meta = self.run_manager.read_json(run_id, "meta.json")
+        topic = kwargs.pop("topic", None) or meta.get("query") or ""
+        query_id = kwargs.pop("query_id", None)
+        candidates = kwargs.pop("candidates", None)
+
+        # Default behavior: classify the persistent run pool first (not a fresh query_id fetch)
+        if candidates is None:
+            pool_rows = self.run_manager.list_pool_papers(run_id)
+            if pool_rows:
+                def _pool_score(x: dict) -> tuple:
+                    has_abs = 1 if (x.get("abstract") or x.get("full_text") or "").strip() else 0
+                    src = (x.get("source") or "").lower()
+                    src_boost = 2 if src == "bohrium" else (1 if src == "crossref_query" else 0)
+                    rel = float(x.get("relevance_score") or x.get("sort_score") or 0.0)
+                    return (has_abs, src_boost, rel)
+
+                pool_rows.sort(key=_pool_score, reverse=True)
+                top_k = max(1, min(int(kwargs.get("top_k", 20)), 200))
+                candidates = pool_rows[:top_k]
+
+        if query_id is None and candidates is None:
+            search = self.run_manager.read_json(run_id, "search.json")
+            query_id = search.get("query_id")
+
+        enrich_abstract_max = int(kwargs.pop("enrich_abstract_max", 20))
+        enrich_workers = int(kwargs.pop("enrich_workers", 4))
+        if candidates is not None:
+            candidates = self._enrich_candidates_with_abstracts(
+                candidates,
+                max_fetch=enrich_abstract_max,
+                max_workers=enrich_workers,
+            )
+            self.run_manager.upsert_pool(run_id, papers=candidates, source_op="classify_enrich")
+
+        out = self.op_classify(topic=topic, query_id=query_id, candidates=candidates, **kwargs)
+        self.run_manager.write_json(run_id, "classify.json", out)
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="classify",
+            status="ok",
+            input_payload={"topic": topic, "query_id": query_id, "used_pool_candidates": candidates is not None, **kwargs},
+            output_file="classify.json",
+            summary=f"items_classified={out.get('items_classified', 0)}",
+        )
+        return out
+
+    def _enrich_candidates_with_abstracts(self, candidates: list[dict[str, Any]], max_fetch: int = 20, max_workers: int = 4) -> list[dict[str, Any]]:
+        if not candidates:
+            return []
+        max_fetch = max(1, min(int(max_fetch), 100))
+        max_workers = max(1, min(int(max_workers), 8))
+        out = [dict(c) for c in candidates]
+
+        todo: list[tuple[int, str]] = []
+        for i, c in enumerate(out):
+            if i >= max_fetch:
+                break
+            if (c.get("abstract") or c.get("full_text") or "").strip():
+                continue
+            d = _normalize_doi(c.get("doi"))
+            if d:
+                todo.append((i, d))
+
+        if not todo:
+            return out
+
+        oa = OpenAlexClient()
+        ev = ElsevierFullTextClient()
+
+        def _fetch_one(doi: str) -> dict[str, Any]:
+            update: dict[str, Any] = {}
+
+            # 1) Elsevier first for likely-valid DOI patterns (best hit rate in our domain).
+            if _is_likely_doi(doi):
+                xml, meta = ev.fetch_xml_by_doi(doi, use_mock=False)
+                abs_text = ""
+                if xml:
+                    try:
+                        abs_text = (extract_abstract(ET.fromstring(xml)) or "").strip()
+                    except Exception:
+                        abs_text = ""
+                if abs_text:
+                    update["abstract"] = abs_text
+                    update["abstract_source"] = "elsevier"
+                    update["abstract_status"] = "ok"
+                    return update
+                if meta.get("status") in (400, 401, 403):
+                    update["abstract_status"] = "entitlement_or_input_blocked"
+
+            # 2) OpenAlex fallback.
+            w = oa.work_by_doi(doi)
+            abs_text = (w.get("abstract") or "").strip()
+            if abs_text:
+                update["abstract"] = abs_text
+                update["abstract_source"] = "openalex"
+                update["abstract_status"] = "ok"
+            elif not update.get("abstract_status"):
+                update["abstract_status"] = "missing"
+
+            if not update.get("abstract") and w.get("error"):
+                update["abstract_error"] = str(w.get("error"))[:300]
+
+            if not update.get("abstract"):
+                # keep existing metadata fields untouched if no abstract enrichment happened
+                return update
+
+            if (w.get("venue") or "").strip():
+                update["journal"] = w.get("venue")
+            if w.get("year"):
+                update["publication_date"] = f"{w.get('year')}-01-01"
+            return update
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {ex.submit(_fetch_one, doi): (idx, doi) for idx, doi in todo}
+            for fut in as_completed(futs):
+                idx, _doi = futs[fut]
+                try:
+                    patch = fut.result() or {}
+                except Exception:
+                    continue
+                if not patch:
+                    continue
+                for k, v in patch.items():
+                    if k in ("journal", "publication_date"):
+                        if not out[idx].get(k) and v:
+                            out[idx][k] = v
+                    elif v is not None:
+                        out[idx][k] = v
+
+        return out
+
+    def _run_seed_dois(self, run_id: str, fallback_max: int = 5) -> list[str]:
+        classify = self.run_manager._try_read(run_id, "classify.json")
+        seeds: list[str] = []
+        if classify:
+            for it in classify.get("items", []) or []:
+                if it.get("label") in ("highly_relevant", "closely_related"):
+                    d = _normalize_doi(it.get("doi"))
+                    if d:
+                        seeds.append(d)
+        if not seeds:
+            search = self.run_manager._try_read(run_id, "search.json") or {}
+            papers = list(search.get("new_papers", []) or [])
+            papers.sort(key=lambda x: float(x.get("relevance_score") or x.get("sort_score") or 0.0), reverse=True)
+            for p in papers[: max(1, min(int(fallback_max), 20))]:
+                d = _normalize_doi(p.get("doi"))
+                if d:
+                    seeds.append(d)
+        return list(dict.fromkeys(seeds))
+
+    def run_grow(self, run_id: str, levels: int = 2, limit_per_node: int = 30, use_mock: bool = False, fallback_seed_max: int = 5) -> dict:
+        seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
+        out = self.op_grow(seeds=seeds, levels=levels, limit_per_node=limit_per_node, use_mock=use_mock)
+        self.run_manager.write_json(run_id, "grow.json", out)
+
+        grow_papers = []
+        for lv in out.get("results", []) or []:
+            for p in lv.get("papers", []) or []:
+                grow_papers.append(
+                    {
+                        "paper_id": p.get("paper_id"),
+                        "doi": p.get("doi"),
+                        "title": p.get("title"),
+                        "journal": p.get("venue"),
+                        "publication_date": (f"{p.get('year')}-01-01" if p.get("year") else None),
+                        "source": p.get("source") or "grow",
+                        "abstract": "",
+                    }
+                )
+        pool_stats = self.run_manager.upsert_pool(run_id, papers=grow_papers, source_op="grow")
+
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="grow",
+            status="ok",
+            input_payload={"seeds": seeds, "levels": levels, "limit_per_node": limit_per_node},
+            output_file="grow.json",
+            summary=f"total_discovered_unique={out.get('total_discovered_unique', 0)} pool_size={pool_stats.get('pool_size', 0)}",
+            meta={"pool": pool_stats},
+        )
+        return out
+
+    def run_rank(self, run_id: str, limit: int = 20, fallback_seed_max: int = 5) -> dict:
+        seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
+        for d in seeds[:8]:
+            try:
+                if self.repo.get_api_paper_by_doi(d) is None:
+                    self.graph_ingest_doi(doi=d, use_mock=False)
+            except Exception:
+                pass
+
+        if not seeds:
+            out = {"operation": "rank", "seeds": [], "items": [], "reason": "no_seed_doi"}
+        else:
+            out = self.graph_rank(seeds=seeds, limit=limit, include_seeds=False)
+            out["operation"] = "rank"
+
+        self.run_manager.write_json(run_id, "rank.json", out)
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="rank",
+            status="ok",
+            input_payload={"seeds": seeds, "limit": limit},
+            output_file="rank.json",
+            summary=f"rank_items={len(out.get('items') or [])}",
+        )
+        return out
+
+    def run_report(self, run_id: str) -> dict:
+        out = self.run_manager.compile_report(run_id=run_id)
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="report",
+            status="ok",
+            input_payload={},
+            output_file="report.json",
+            summary="compiled report.md + report.json",
+        )
+        return out
+
     def relevance_classify_query_id(
         self,
         topic: str,
         query_id: str,
         top_k: int = 20,
         sort: str = "RelevanceScore",
-        provider: str | None = "openai-codex",
-        model: str | None = "gpt-5.1-codex-mini",
-        thinking: str | None = "none",
+        provider: str | None = DEFAULT_LLM_PROVIDER,
+        model: str | None = DEFAULT_LLM_MODEL,
+        thinking: str | None = DEFAULT_LLM_THINKING,
         max_workers: int = 2,
     ) -> dict:
         topic = (topic or "").strip()
