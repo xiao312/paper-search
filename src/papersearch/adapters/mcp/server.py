@@ -231,6 +231,49 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "op_search",
+        "description": "Main operation #1: natural-language search with Bohrium + Crossref top-up",
+        "inputSchema": {
+            "type": "object",
+            "required": ["prompt"],
+            "properties": {
+                "prompt": {"type": "string", "minLength": 3},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                "min_seed_count": {"type": "integer", "minimum": 1, "maximum": 200, "default": 5},
+                "crossref_rows": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30}
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "op_classify",
+        "description": "Main operation #2: relevance classification",
+        "inputSchema": {
+            "type": "object",
+            "required": ["topic", "query_id"],
+            "properties": {
+                "topic": {"type": "string", "minLength": 3},
+                "query_id": {"type": "string", "minLength": 1},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "op_grow",
+        "description": "Main operation #3: 2-level citation/reference exploration",
+        "inputSchema": {
+            "type": "object",
+            "required": ["seeds"],
+            "properties": {
+                "seeds": {"type": "string", "minLength": 1},
+                "levels": {"type": "integer", "minimum": 1, "maximum": 2, "default": 2},
+                "limit_per_node": {"type": "integer", "minimum": 1, "maximum": 200, "default": 30}
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "ingest_doi",
         "description": "Ingest DOI with Elsevier XML route + markdown render",
         "inputSchema": {
@@ -443,6 +486,9 @@ class MCPServer:
                 "seed_candidates": "seed-candidates",
                 "seed_candidates_auto": "seed-candidates-auto",
                 "relevance_classify_queryid": "relevance-classify-queryid",
+                "op_search": "op-search",
+                "op_classify": "op-classify",
+                "op_grow": "op-grow",
                 "ingest_doi": "ingest-doi",
                 "graph_ingest_doi": "graph-ingest-doi",
                 "graph_stats": "graph-stats",

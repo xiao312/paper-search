@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from papersearch.app.repository import Repo
@@ -713,6 +713,249 @@ class AppService:
         out["fallback_attempts"] = fallback_attempts
         out["crossref_topup"] = crossref_topup
         return out
+
+    def op_search(
+        self,
+        prompt: str,
+        top_k: int = 20,
+        min_seed_count: int = 5,
+        crossref_rows: int = 30,
+        sort: str = "RelevanceScore",
+        provider: str | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        sigma_model: str = "auto",
+        discipline: str = "ET",
+        wait_seconds: int = 30,
+        poll_interval: float = 1.5,
+    ) -> dict:
+        out = self.seed_candidates(
+            query=prompt,
+            top_k=top_k,
+            sort=sort,
+            provider=provider,
+            model=model,
+            thinking=thinking,
+            sigma_model=sigma_model,
+            discipline=discipline,
+            wait_seconds=wait_seconds,
+            poll_interval=poll_interval,
+            min_seed_count=min_seed_count,
+            crossref_rows=crossref_rows,
+        )
+        return {
+            "operation": "search",
+            "prompt": prompt,
+            "new_papers": out.get("seeds") or [],
+            "new_paper_count": int(out.get("seed_count") or 0),
+            "query_id": out.get("query_id"),
+            "search_meta": {
+                "bohrium": out.get("bohrium_meta"),
+                "crossref_topup": out.get("crossref_topup"),
+                "fallback_attempts": out.get("fallback_attempts"),
+            },
+            "raw": out,
+        }
+
+    def _classify_candidate(self, topic: str, cand: dict[str, Any], provider: str | None, model: str | None, thinking: str | None) -> dict:
+        title = (cand.get("title") or "").strip()
+        doi = _normalize_doi(cand.get("doi"))
+        abstract = (cand.get("abstract") or "").strip()
+        full_text = (cand.get("full_text") or "").strip()
+        journal = (cand.get("journal") or cand.get("venue") or "").strip()
+        publication_date = cand.get("publication_date") or cand.get("published")
+
+        content = full_text if full_text else abstract
+        if not content:
+            return {
+                "paper_id": f"doi:{doi}" if doi else None,
+                "doi": doi,
+                "title": title,
+                "journal": journal,
+                "publication_date": publication_date,
+                "label": "non_classifiable",
+                "reason": "no_full_text_or_abstract",
+                "llm_ok": False,
+            }
+
+        prompt = (
+            "Classify a candidate paper against the research topic. Return strict JSON only with keys: "
+            "label, reason. label must be one of highly_relevant, closely_related, ignorable. "
+            "If uncertain, choose closely_related.\n"
+            f"Topic:\n{topic}\n\n"
+            f"Paper title:\n{title}\n\n"
+            f"Journal/venue:\n{journal}\n\n"
+            f"Publication date:\n{publication_date or ''}\n\n"
+            f"Paper content (full text preferred, else abstract):\n{content}\n"
+        )
+        llm = self.llm_prompt(prompt=prompt, provider=provider, model=model, thinking=thinking)
+        parsed = _parse_json_object(llm.get("response")) if llm.get("ok") else None
+        label = str((parsed or {}).get("label") or "").strip().lower().replace(" ", "_")
+        if label not in ("highly_relevant", "closely_related", "ignorable"):
+            label = "non_classifiable"
+
+        return {
+            "paper_id": f"doi:{doi}" if doi else None,
+            "doi": doi,
+            "title": title,
+            "journal": journal,
+            "publication_date": publication_date,
+            "label": label,
+            "reason": ((parsed or {}).get("reason") or llm.get("stderr") or "").strip(),
+            "llm_ok": bool(llm.get("ok")),
+        }
+
+    def op_classify(
+        self,
+        topic: str,
+        candidates: list[dict[str, Any]] | None = None,
+        query_id: str | None = None,
+        top_k: int = 20,
+        sort: str = "RelevanceScore",
+        provider: str | None = "openai-codex",
+        model: str | None = "gpt-5.1-codex-mini",
+        thinking: str | None = "none",
+        max_workers: int = 2,
+    ) -> dict:
+        topic = (topic or "").strip()
+        if len(topic) < 3:
+            raise ValueError("topic must be at least 3 chars")
+
+        items = list(candidates or [])
+        source = "input_candidates"
+        raw_meta = None
+        if not items:
+            if not query_id:
+                raise ValueError("query_id is required when candidates is empty")
+            papers = self.bohrium_question_papers(query_id=str(query_id), sort=sort)
+            items = list(papers.get("items") or [])
+            raw_meta = {
+                "code": papers.get("code"),
+                "source_list": papers.get("source_list"),
+                "log_id": papers.get("log_id"),
+                "error": papers.get("error"),
+            }
+            source = "bohrium_query_id"
+
+        items = items[: max(1, min(int(top_k), 200))]
+        max_workers = max(1, min(int(max_workers), 8))
+
+        results = []
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(self._classify_candidate, topic, it, provider, model, thinking) for it in items]
+            for fut in as_completed(futs):
+                results.append(fut.result())
+
+        order = {(it.get("doi") or it.get("title") or ""): idx for idx, it in enumerate(items)}
+        results.sort(key=lambda x: order.get(x.get("doi") or x.get("title") or "", 10**9))
+
+        counts = {
+            "highly_relevant": sum(1 for x in results if x.get("label") == "highly_relevant"),
+            "closely_related": sum(1 for x in results if x.get("label") == "closely_related"),
+            "ignorable": sum(1 for x in results if x.get("label") == "ignorable"),
+            "non_classifiable": sum(1 for x in results if x.get("label") == "non_classifiable"),
+        }
+
+        return {
+            "operation": "relevance_classification",
+            "topic": topic,
+            "source": source,
+            "query_id": str(query_id) if query_id else None,
+            "counts": counts,
+            "items_classified": len(results),
+            "items": results,
+            "meta": raw_meta,
+        }
+
+    def op_grow(
+        self,
+        seeds: list[str],
+        levels: int = 2,
+        limit_per_node: int = 30,
+        use_mock: bool = False,
+    ) -> dict:
+        if not seeds:
+            raise ValueError("seeds is required")
+        levels = max(1, min(int(levels), 2))
+        limit_per_node = max(1, min(int(limit_per_node), 200))
+
+        resolved = []
+        ingest = []
+        for s in seeds:
+            x = (s or "").strip()
+            if not x:
+                continue
+            doi = _normalize_doi(x[4:]) if x.lower().startswith("doi:") else (_normalize_doi(x) if x.startswith("10.") else None)
+            if doi:
+                existing = self.repo.get_api_paper_by_doi(doi)
+                if existing is None:
+                    try:
+                        ingest.append(self.graph_ingest_doi(doi=doi, use_mock=use_mock))
+                    except Exception as e:
+                        ingest.append({"doi": doi, "error": str(e)})
+                else:
+                    ingest.append({"doi": doi, "status": "already_present"})
+                try:
+                    resolved.append(self._resolve_seed(doi))
+                except Exception:
+                    pass
+            else:
+                try:
+                    resolved.append(self._resolve_seed(x))
+                except Exception:
+                    pass
+
+        resolved = list(dict.fromkeys(resolved))
+        if not resolved:
+            raise ValueError("no resolvable seeds")
+
+        visited = set(resolved)
+        frontier = list(resolved)
+        level_out = []
+        for lv in range(1, levels + 1):
+            next_frontier = []
+            edges = []
+            for pid in frontier:
+                neigh = self.repo.graph_neighbors(pid, direction="both", limit=limit_per_node)
+                for r in neigh.get("out", []):
+                    nid = r.get("paper_id")
+                    if not nid:
+                        continue
+                    edges.append({"level": lv, "relation": "references", "src": pid, "dst": nid})
+                    if nid not in visited:
+                        visited.add(nid)
+                        next_frontier.append(nid)
+                for r in neigh.get("in", []):
+                    nid = r.get("paper_id")
+                    if not nid:
+                        continue
+                    edges.append({"level": lv, "relation": "cited_by", "src": nid, "dst": pid})
+                    if nid not in visited:
+                        visited.add(nid)
+                        next_frontier.append(nid)
+
+            meta_rows = self.repo.get_api_papers_by_ids(next_frontier)
+            level_out.append(
+                {
+                    "level": lv,
+                    "frontier_count": len(frontier),
+                    "discovered_count": len(next_frontier),
+                    "edges": edges,
+                    "papers": meta_rows,
+                }
+            )
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        return {
+            "operation": "grow",
+            "levels": levels,
+            "seed_papers": resolved,
+            "ingest": ingest,
+            "results": level_out,
+            "total_discovered_unique": len(visited),
+        }
 
     def relevance_classify_query_id(
         self,

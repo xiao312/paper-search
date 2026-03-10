@@ -8,7 +8,12 @@ from papersearch.ingest.pipeline import discover_candidates, ingest_doi
 
 def run_command(svc: AppService, command: str, args: dict[str, Any]) -> dict[str, Any]:
     if command == "search":
-        return svc.start_search(query=args["query"], limit=int(args.get("limit", 20)))
+        return svc.op_search(
+            prompt=str(args["query"]),
+            top_k=int(args.get("limit", 20)),
+            min_seed_count=max(5, min(int(args.get("limit", 20)), 50)),
+            crossref_rows=30,
+        )
     if command == "search-status":
         return svc.get_search_status(args["search_id"])
     if command == "search-results":
@@ -84,6 +89,41 @@ def run_command(svc: AppService, command: str, args: dict[str, Any]) -> dict[str
             model=args.get("model", "gpt-5.1-codex-mini"),
             thinking=args.get("thinking", "none"),
             max_workers=int(args.get("max_workers", 2)),
+        )
+    if command == "op-search":
+        return svc.op_search(
+            prompt=str(args["prompt"]),
+            top_k=int(args.get("top_k", 20)),
+            min_seed_count=int(args.get("min_seed_count", 5)),
+            crossref_rows=int(args.get("crossref_rows", 30)),
+            sort=str(args.get("sort", "RelevanceScore")),
+            provider=args.get("provider"),
+            model=args.get("model"),
+            thinking=args.get("thinking"),
+            sigma_model=str(args.get("sigma_model", "auto")),
+            discipline=str(args.get("discipline", "ET")),
+            wait_seconds=int(args.get("wait_seconds", 30)),
+            poll_interval=float(args.get("poll_interval", 1.5)),
+        )
+    if command == "op-classify":
+        return svc.op_classify(
+            topic=str(args["topic"]),
+            query_id=str(args["query_id"]),
+            top_k=int(args.get("top_k", 20)),
+            sort=str(args.get("sort", "RelevanceScore")),
+            provider=args.get("provider", "openai-codex"),
+            model=args.get("model", "gpt-5.1-codex-mini"),
+            thinking=args.get("thinking", "none"),
+            max_workers=int(args.get("max_workers", 2)),
+        )
+    if command == "op-grow":
+        seeds_raw = args.get("seeds", "")
+        seeds = [s.strip() for s in str(seeds_raw).split(",") if s.strip()]
+        return svc.op_grow(
+            seeds=seeds,
+            levels=int(args.get("levels", 2)),
+            limit_per_node=int(args.get("limit_per_node", 30)),
+            use_mock=bool(args.get("mock", False)),
         )
     if command == "ingest-doi":
         return ingest_doi(

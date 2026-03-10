@@ -33,6 +33,9 @@ papersearch llm prompt "Summarize ammonia/natural-gas combustion ML trends in 5 
 papersearch seed-candidates "ammonia/natural gas combustion kinetics with deep learning surrogates" <query_id> --top-k 20 --provider openai-codex --model gpt-5.1 --thinking low --json
 papersearch seed-candidates-auto "ammonia/natural gas combustion kinetics with deep learning surrogates" --top-k 20 --min-seed-count 5 --crossref-rows 30 --sigma-model auto --discipline ET --provider openai-codex --model gpt-5.1 --thinking low --json
 papersearch relevance-classify-queryid "ammonia natural gas combustion kinetics with deep learning surrogates" <query_id> --top-k 20 --provider openai-codex --model gpt-5.1-codex-mini --thinking none --max-workers 2 --json
+papersearch op-search "ammonia natural gas combustion kinetics with deep learning surrogates" --top-k 20 --min-seed-count 5 --crossref-rows 30 --json
+papersearch op-classify "ammonia natural gas combustion kinetics with deep learning surrogates" <query_id> --top-k 20 --json
+papersearch op-grow "10.1016/j.fuel.2026.138904" --levels 2 --limit-per-node 30 --json
 papersearch ingest-doi 10.1016/j.mock.2024.123456 --mock --json
 # live: try Elsevier XML + download figure assets when available
 papersearch ingest-doi 10.1016/j.egyai.2024.100341 --json
