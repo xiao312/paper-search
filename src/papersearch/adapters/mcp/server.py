@@ -102,6 +102,135 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "bohrium_create_session",
+        "description": "Create Bohrium sigma-search session from query",
+        "inputSchema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string", "minLength": 3},
+                "sigma_model": {"type": "string", "default": "auto"},
+                "discipline": {"type": "string", "default": "All"},
+                "access_key": {"type": "string"}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "bohrium_session_detail",
+        "description": "Get Bohrium sigma-search session detail by uuid",
+        "inputSchema": {
+            "type": "object",
+            "required": ["uuid"],
+            "properties": {
+                "uuid": {"type": "string", "minLength": 1},
+                "access_key": {"type": "string"}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "bohrium_question_papers",
+        "description": "Get papers for a Bohrium Sigma-search query ID",
+        "inputSchema": {
+            "type": "object",
+            "required": ["query_id"],
+            "properties": {
+                "query_id": {"type": "string", "minLength": 1},
+                "sort": {"type": "string", "default": "RelevanceScore"},
+                "access_key": {"type": "string"}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "llm_list_models",
+        "description": "List models from pi-mono provider registry via installed pi CLI",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string"},
+                "search": {"type": "string"}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "llm_prompt",
+        "description": "Run a single-shot pi prompt with provider/model selection",
+        "inputSchema": {
+            "type": "object",
+            "required": ["prompt"],
+            "properties": {
+                "prompt": {"type": "string", "minLength": 1},
+                "provider": {"type": "string"},
+                "model": {"type": "string"},
+                "thinking": {"type": "string"}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "seed_candidates",
+        "description": "Use pi LLM to expand a query and Bohrium queryID papers to select seed candidates",
+        "inputSchema": {
+            "type": "object",
+            "required": ["query", "query_id"],
+            "properties": {
+                "query": {"type": "string", "minLength": 3},
+                "query_id": {"type": "string", "minLength": 1},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                "sort": {"type": "string", "default": "RelevanceScore"},
+                "provider": {"type": "string"},
+                "model": {"type": "string"},
+                "thinking": {"type": "string"}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "seed_candidates_auto",
+        "description": "Create Bohrium session, resolve queryID, then select seed candidates",
+        "inputSchema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string", "minLength": 3},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                "sort": {"type": "string", "default": "RelevanceScore"},
+                "sigma_model": {"type": "string", "default": "auto"},
+                "discipline": {"type": "string", "default": "All"},
+                "provider": {"type": "string"},
+                "model": {"type": "string"},
+                "thinking": {"type": "string"},
+                "wait_seconds": {"type": "integer", "minimum": 0, "default": 25},
+                "poll_interval": {"type": "number", "exclusiveMinimum": 0, "default": 1.5},
+                "min_seed_count": {"type": "integer", "minimum": 1, "maximum": 200, "default": 5},
+                "crossref_rows": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "relevance_classify_queryid",
+        "description": "Batch classify papers into highly_relevant/closely_related/ignorable (or non_classifiable) using abstracts",
+        "inputSchema": {
+            "type": "object",
+            "required": ["topic", "query_id"],
+            "properties": {
+                "topic": {"type": "string", "minLength": 3},
+                "query_id": {"type": "string", "minLength": 1},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                "sort": {"type": "string", "default": "RelevanceScore"},
+                "provider": {"type": "string", "default": "openai-codex"},
+                "model": {"type": "string", "default": "gpt-5.1-codex-mini"},
+                "thinking": {"type": "string", "default": "none"},
+                "max_workers": {"type": "integer", "minimum": 1, "maximum": 8, "default": 2}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "ingest_doi",
         "description": "Ingest DOI with Elsevier XML route + markdown render",
         "inputSchema": {
@@ -113,6 +242,161 @@ TOOLS: list[dict[str, Any]] = [
                 "abstract": {"type": "string"},
                 "mock": {"type": "boolean", "default": False},
                 "fetch_assets": {"type": "boolean", "default": True}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_ingest_doi",
+        "description": "Ingest DOI into local citation graph store and rebuild DOI-matched edges",
+        "inputSchema": {
+            "type": "object",
+            "required": ["doi"],
+            "properties": {
+                "doi": {"type": "string", "minLength": 3},
+                "mock": {"type": "boolean", "default": False}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_stats",
+        "description": "Get local citation graph stats",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_neighbors",
+        "description": "Get incoming/outgoing citation neighbors for a seed DOI or paper_id",
+        "inputSchema": {
+            "type": "object",
+            "required": ["seed"],
+            "properties": {
+                "seed": {"type": "string", "minLength": 1},
+                "direction": {"type": "string", "enum": ["in", "out", "both"], "default": "both"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_related",
+        "description": "Get related papers by citation-structure overlap (coupling/cocite)",
+        "inputSchema": {
+            "type": "object",
+            "required": ["seed"],
+            "properties": {
+                "seed": {"type": "string", "minLength": 1},
+                "mode": {"type": "string", "enum": ["coupling", "cocite"], "default": "coupling"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_prior",
+        "description": "Get prior-work neighbors (older than seed year)",
+        "inputSchema": {
+            "type": "object",
+            "required": ["seed"],
+            "properties": {
+                "seed": {"type": "string", "minLength": 1},
+                "direction": {"type": "string", "enum": ["in", "out", "both"], "default": "both"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_derivative",
+        "description": "Get derivative-work neighbors (newer than seed year)",
+        "inputSchema": {
+            "type": "object",
+            "required": ["seed"],
+            "properties": {
+                "seed": {"type": "string", "minLength": 1},
+                "direction": {"type": "string", "enum": ["in", "out", "both"], "default": "both"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_related_set",
+        "description": "Get related papers from a seed set (comma-separated seeds)",
+        "inputSchema": {
+            "type": "object",
+            "required": ["seeds"],
+            "properties": {
+                "seeds": {"type": "string", "minLength": 1},
+                "mode": {"type": "string", "enum": ["coupling", "cocite"], "default": "coupling"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_ingest_openalex_journals",
+        "description": "Ingest papers from OpenAlex by journal names (comma-separated)",
+        "inputSchema": {
+            "type": "object",
+            "required": ["journals"],
+            "properties": {
+                "journals": {"type": "string", "minLength": 1},
+                "per_journal": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_backfill_openalex_journal",
+        "description": "Backfill one journal from OpenAlex with refs/citation metadata only",
+        "inputSchema": {
+            "type": "object",
+            "required": ["journal"],
+            "properties": {
+                "journal": {"type": "string", "minLength": 1},
+                "max_results": {"type": "integer", "minimum": 1},
+                "per_page": {"type": "integer", "minimum": 1, "maximum": 200, "default": 200}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_expand",
+        "description": "Multi-hop expansion from seed papers using missing reference DOIs",
+        "inputSchema": {
+            "type": "object",
+            "required": ["seeds"],
+            "properties": {
+                "seeds": {"type": "string", "minLength": 1},
+                "rounds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 1},
+                "max_new_per_round": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
+                "max_workers": {"type": "integer", "minimum": 1, "maximum": 8, "default": 2},
+                "mock": {"type": "boolean", "default": false}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graph_rank",
+        "description": "Rank related papers using personalized PageRank over local citation graph",
+        "inputSchema": {
+            "type": "object",
+            "required": ["seeds"],
+            "properties": {
+                "seeds": {"type": "string", "minLength": 1},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                "alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1, "default": 0.85},
+                "max_iter": {"type": "integer", "minimum": 1, "maximum": 200, "default": 100},
+                "tol": {"type": "number", "exclusiveMinimum": 0, "default": 1e-7},
+                "include_seeds": {"type": "boolean", "default": false},
+                "no_venue_prior": {"type": "boolean", "default": false},
+                "same_venue_boost": {"type": "number", "minimum": 0, "default": 0.2},
+                "related_venue_boost": {"type": "number", "minimum": 0, "default": 0.08}
             },
             "additionalProperties": False,
         },
@@ -151,7 +435,26 @@ class MCPServer:
                 "add_paper_to_collection": "collection-add",
                 "save_paper": "save-paper",
                 "discover_candidates": "discover",
+                "bohrium_create_session": "bohrium-create-session",
+                "bohrium_session_detail": "bohrium-session-detail",
+                "bohrium_question_papers": "bohrium-question-papers",
+                "llm_list_models": "llm-list-models",
+                "llm_prompt": "llm-prompt",
+                "seed_candidates": "seed-candidates",
+                "seed_candidates_auto": "seed-candidates-auto",
+                "relevance_classify_queryid": "relevance-classify-queryid",
                 "ingest_doi": "ingest-doi",
+                "graph_ingest_doi": "graph-ingest-doi",
+                "graph_stats": "graph-stats",
+                "graph_neighbors": "graph-neighbors",
+                "graph_related": "graph-related",
+                "graph_prior": "graph-prior",
+                "graph_derivative": "graph-derivative",
+                "graph_related_set": "graph-related-set",
+                "graph_ingest_openalex_journals": "graph-ingest-openalex-journals",
+                "graph_backfill_openalex_journal": "graph-backfill-openalex-journal",
+                "graph_expand": "graph-expand",
+                "graph_rank": "graph-rank",
             }
             command = tool_to_command.get(name or "")
             if not command:

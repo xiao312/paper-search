@@ -25,9 +25,30 @@ papersearch search-results srch_xxx --limit 10 --json
 papersearch collection create "RAG reading list" --json
 papersearch collection add col_xxx mock:1234.0001 --json
 papersearch discover "multimodal retrieval" --limit 5 --mock --json
+papersearch bohrium-create-session "ammonia natural gas combustion kinetics with deep learning surrogates" --sigma-model auto --discipline ET --json
+papersearch bohrium-session-detail <uuid> --json
+papersearch bohrium-question-papers <query_id> --sort RelevanceScore --json
+papersearch llm list-models --provider openrouter --json
+papersearch llm prompt "Summarize ammonia/natural-gas combustion ML trends in 5 bullets" --provider openrouter --model anthropic/claude-sonnet-4 --thinking low --json
+papersearch seed-candidates "ammonia/natural gas combustion kinetics with deep learning surrogates" <query_id> --top-k 20 --provider openai-codex --model gpt-5.1 --thinking low --json
+papersearch seed-candidates-auto "ammonia/natural gas combustion kinetics with deep learning surrogates" --top-k 20 --min-seed-count 5 --crossref-rows 30 --sigma-model auto --discipline ET --provider openai-codex --model gpt-5.1 --thinking low --json
+papersearch relevance-classify-queryid "ammonia natural gas combustion kinetics with deep learning surrogates" <query_id> --top-k 20 --provider openai-codex --model gpt-5.1-codex-mini --thinking none --max-workers 2 --json
 papersearch ingest-doi 10.1016/j.mock.2024.123456 --mock --json
 # live: try Elsevier XML + download figure assets when available
 papersearch ingest-doi 10.1016/j.egyai.2024.100341 --json
+
+# graph (API-first, DOI-centric)
+papersearch graph ingest-doi 10.1016/j.egyai.2024.100341 --json
+papersearch graph stats --json
+papersearch graph neighbors 10.1016/j.egyai.2024.100341 --direction out --json
+papersearch graph related 10.1016/j.egyai.2024.100341 --mode coupling --json
+papersearch graph prior 10.1016/j.egyai.2024.100341 --direction in --json
+papersearch graph derivative 10.1016/j.egyai.2024.100341 --direction in --json
+papersearch graph related-set 10.1016/j.egyai.2024.100341,10.1016/j.egyai.2021.100128 --mode coupling --json
+papersearch graph ingest-openalex-journals "Fuel,Combustion and Flame,Energy,Proceedings of the Combustion Institute" --per-journal 10 --json
+papersearch graph backfill-openalex-journal "Proceedings of the Combustion Institute" --json
+papersearch graph expand "10.1016/j.proci.2020.06.375" --rounds 2 --max-new-per-round 100 --max-workers 2 --json
+papersearch graph rank "10.1016/j.proci.2020.06.375" --limit 20 --max-iter 100 --tol 1e-7 --json
 ```
 
 ## MCP quick check
