@@ -14,10 +14,6 @@ def run_command(svc: AppService, command: str, args: dict[str, Any]) -> dict[str
             min_seed_count=max(5, min(int(args.get("limit", 20)), 50)),
             crossref_rows=30,
         )
-    if command == "search-status":
-        return svc.get_search_status(args["search_id"])
-    if command == "search-results":
-        return svc.get_search_results(args["search_id"], limit=int(args.get("limit", 20)), cursor=args.get("cursor"))
     if command == "collection-create":
         return svc.create_collection(args["name"], description=args.get("description", ""))
     if command == "collection-add":

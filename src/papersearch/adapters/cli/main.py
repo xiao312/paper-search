@@ -26,16 +26,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, default=20)
     s.add_argument("--json", action="store_true")
 
-    s = sub.add_parser("search-status")
-    s.add_argument("search_id")
-    s.add_argument("--json", action="store_true")
-
-    s = sub.add_parser("search-results")
-    s.add_argument("search_id")
-    s.add_argument("--limit", type=int, default=20)
-    s.add_argument("--cursor")
-    s.add_argument("--json", action="store_true")
-
     c = sub.add_parser("collection")
     c_sub = c.add_subparsers(dest="collection_cmd", required=True)
 

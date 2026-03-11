@@ -24,30 +24,6 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "get_search_status",
-        "description": "Get status for a search job",
-        "inputSchema": {
-            "type": "object",
-            "required": ["search_id"],
-            "properties": {"search_id": {"type": "string", "minLength": 1}},
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "get_search_results",
-        "description": "List search results",
-        "inputSchema": {
-            "type": "object",
-            "required": ["search_id"],
-            "properties": {
-                "search_id": {"type": "string", "minLength": 1},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-                "cursor": {"type": "string"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
         "name": "create_collection",
         "description": "Create a collection",
         "inputSchema": {
@@ -472,8 +448,6 @@ class MCPServer:
         try:
             tool_to_command = {
                 "search_papers": "search",
-                "get_search_status": "search-status",
-                "get_search_results": "search-results",
                 "create_collection": "collection-create",
                 "add_paper_to_collection": "collection-add",
                 "save_paper": "save-paper",
