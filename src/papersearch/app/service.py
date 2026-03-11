@@ -6,6 +6,7 @@ import math
 import random
 import re
 import time
+import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -114,6 +115,33 @@ def _parse_json_object(text: str | None) -> dict | None:
         return obj if isinstance(obj, dict) else None
     except Exception:
         return None
+
+
+def _parse_json_array(text: str | None) -> list | None:
+    if not text:
+        return None
+    s = (text or "").strip()
+    try:
+        arr = json.loads(s)
+        return arr if isinstance(arr, list) else None
+    except Exception:
+        pass
+    m = re.search(r"\[[\s\S]*\]", s)
+    if not m:
+        return None
+    try:
+        arr = json.loads(m.group(0))
+        return arr if isinstance(arr, list) else None
+    except Exception:
+        return None
+
+
+def _pick_count_primary_fallback(primary: Any, fallback: Any) -> int:
+    p = int(_safe_float(primary, 0.0))
+    if p > 0:
+        return p
+    f = int(_safe_float(fallback, 0.0))
+    return max(f, 0)
 
 
 def _normalize_text(s: str | None) -> str:
@@ -854,6 +882,7 @@ class AppService:
                 "llm_ok": False,
             }
 
+        content = content[:8000]
         prompt = (
             "Classify a candidate paper against the research topic. Return strict JSON only with keys: "
             "label, reason. label must be one of highly_relevant, closely_related, ignorable. "
@@ -881,6 +910,96 @@ class AppService:
             "llm_ok": bool(llm.get("ok")),
         }
 
+    def _classify_candidates_batch(self, topic: str, candidates: list[dict[str, Any]], provider: str | None, model: str | None, thinking: str | None) -> tuple[list[dict], int]:
+        if not candidates:
+            return [], 0
+
+        payload = []
+        base = []
+        for idx, cand in enumerate(candidates):
+            title = (cand.get("title") or "").strip()
+            doi = _normalize_doi(cand.get("doi"))
+            abstract = (cand.get("abstract") or "").strip()
+            full_text = (cand.get("full_text") or "").strip()
+            journal = (cand.get("journal") or cand.get("venue") or "").strip()
+            publication_date = cand.get("publication_date") or cand.get("published")
+            content = (full_text if full_text else abstract).strip()
+
+            base.append(
+                {
+                    "paper_id": f"doi:{doi}" if doi else None,
+                    "doi": doi,
+                    "title": title,
+                    "journal": journal,
+                    "publication_date": publication_date,
+                }
+            )
+
+            if not content:
+                payload.append({"idx": idx, "skip": True})
+            else:
+                payload.append(
+                    {
+                        "idx": idx,
+                        "title": title,
+                        "journal": journal,
+                        "publication_date": publication_date or "",
+                        "content": content[:5000],
+                    }
+                )
+
+        prompt = (
+            "Classify candidate papers against the research topic. Return strict JSON array only. "
+            "Each element must have keys: idx, label, reason. "
+            "label must be one of highly_relevant, closely_related, ignorable. "
+            "If uncertain, choose closely_related.\n"
+            f"Topic:\n{topic}\n\n"
+            "Candidates JSON:\n"
+            f"{json.dumps(payload, ensure_ascii=False)}"
+        )
+
+        llm = self.llm_prompt(prompt=prompt, provider=provider, model=model, thinking=thinking)
+        if not llm.get("ok"):
+            out = []
+            for b, p in zip(base, payload):
+                if p.get("skip"):
+                    out.append({**b, "label": "non_classifiable", "reason": "no_full_text_or_abstract", "llm_ok": False})
+                else:
+                    out.append({**b, "label": "non_classifiable", "reason": (llm.get("stderr") or "batch_llm_failed").strip(), "llm_ok": False})
+            return out, 1
+
+        parsed = _parse_json_array(llm.get("response")) or []
+        by_idx = {}
+        for it in parsed:
+            if not isinstance(it, dict):
+                continue
+            i = it.get("idx")
+            try:
+                i = int(i)
+            except Exception:
+                continue
+            by_idx[i] = it
+
+        out = []
+        for i, (b, p) in enumerate(zip(base, payload)):
+            if p.get("skip"):
+                out.append({**b, "label": "non_classifiable", "reason": "no_full_text_or_abstract", "llm_ok": False})
+                continue
+            one = by_idx.get(i) or {}
+            label = str(one.get("label") or "").strip().lower().replace(" ", "_")
+            if label not in ("highly_relevant", "closely_related", "ignorable"):
+                label = "non_classifiable"
+            out.append(
+                {
+                    **b,
+                    "label": label,
+                    "reason": str(one.get("reason") or "").strip(),
+                    "llm_ok": bool(by_idx.get(i)),
+                }
+            )
+
+        return out, 1
+
     def op_classify(
         self,
         topic: str,
@@ -892,6 +1011,7 @@ class AppService:
         model: str | None = DEFAULT_LLM_MODEL,
         thinking: str | None = DEFAULT_LLM_THINKING,
         max_workers: int = 2,
+        batch_size: int = 5,
     ) -> dict:
         topic = (topic or "").strip()
         if len(topic) < 3:
@@ -915,12 +1035,23 @@ class AppService:
 
         items = items[: max(1, min(int(top_k), 200))]
         max_workers = max(1, min(int(max_workers), 8))
+        batch_size = max(1, min(int(batch_size), 20))
+        t0 = time.perf_counter()
 
         results = []
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = [ex.submit(self._classify_candidate, topic, it, provider, model, thinking) for it in items]
-            for fut in as_completed(futs):
-                results.append(fut.result())
+        llm_calls = 0
+        if batch_size <= 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futs = [ex.submit(self._classify_candidate, topic, it, provider, model, thinking) for it in items]
+                for fut in as_completed(futs):
+                    results.append(fut.result())
+            llm_calls = sum(1 for it in items if (it.get("abstract") or it.get("full_text") or "").strip())
+        else:
+            for i in range(0, len(items), batch_size):
+                batch = items[i : i + batch_size]
+                batch_out, calls = self._classify_candidates_batch(topic, batch, provider, model, thinking)
+                llm_calls += calls
+                results.extend(batch_out)
 
         order = {(it.get("doi") or it.get("title") or ""): idx for idx, it in enumerate(items)}
         results.sort(key=lambda x: order.get(x.get("doi") or x.get("title") or "", 10**9))
@@ -932,6 +1063,7 @@ class AppService:
             "non_classifiable": sum(1 for x in results if x.get("label") == "non_classifiable"),
         }
 
+        dur_ms = _ms_since(t0)
         return {
             "operation": "relevance_classification",
             "topic": topic,
@@ -940,7 +1072,16 @@ class AppService:
             "counts": counts,
             "items_classified": len(results),
             "items": results,
-            "meta": raw_meta,
+            "meta": {
+                "upstream": raw_meta,
+                "perf": {
+                    "duration_ms": dur_ms,
+                    "batch_size": batch_size,
+                    "llm_calls": llm_calls,
+                    "items": len(items),
+                    "items_per_sec": round(len(items) / max((dur_ms / 1000.0), 1e-6), 4),
+                },
+            },
         }
 
     def op_grow(
@@ -1248,9 +1389,36 @@ class AppService:
                     seeds.append(d)
         return list(dict.fromkeys(seeds))
 
-    def run_grow(self, run_id: str, levels: int = 2, limit_per_node: int = 30, use_mock: bool = False, fallback_seed_max: int = 5) -> dict:
+    def _run_search_pool_dois(self, run_id: str, max_count: int | None = None) -> list[str]:
+        search = self.run_manager._try_read(run_id, "search.json") or {}
+        papers = list(search.get("new_papers", []) or [])
+        dois: list[str] = []
+        for p in papers:
+            d = _normalize_doi(p.get("doi"))
+            if d:
+                dois.append(d)
+        uniq = list(dict.fromkeys(dois))
+        if max_count is None:
+            return uniq
+        return uniq[: max(1, min(int(max_count), len(uniq) if uniq else 1))]
+
+    def run_grow(
+        self,
+        run_id: str,
+        levels: int = 2,
+        limit_per_node: int = 30,
+        use_mock: bool = False,
+        fallback_seed_max: int = 5,
+        seed_strategy: str = "search_pool",
+        search_seed_max: int | None = None,
+    ) -> dict:
         t0 = time.perf_counter()
-        seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
+        if seed_strategy == "search_pool":
+            seeds = self._run_search_pool_dois(run_id, max_count=search_seed_max)
+            if not seeds:
+                seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
+        else:
+            seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
         out = self.op_grow(seeds=seeds, levels=levels, limit_per_node=limit_per_node, use_mock=use_mock)
         self.run_manager.write_json(run_id, "grow.json", out)
 
@@ -1290,28 +1458,372 @@ class AppService:
         )
         return out
 
-    def run_rank(self, run_id: str, limit: int = 20, fallback_seed_max: int = 5) -> dict:
-        t0 = time.perf_counter()
-        seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
-        for d in seeds[:8]:
-            try:
-                if self.repo.get_api_paper_by_doi(d) is None:
-                    self.graph_ingest_doi(doi=d, use_mock=False)
-            except Exception:
-                pass
+    def _rank_within_run_pool(
+        self,
+        run_id: str,
+        limit: int = 20,
+        alpha: float = 0.85,
+        max_iter: int = 100,
+        tol: float = 1e-7,
+        pool_bias_strength: float = 0.8,
+        seed_init_boost: float = 3.0,
+        seed_pool_factor_floor: float = 0.06,
+        seed_rescue_max: int = 8,
+        anchor_score_boost: float = 4.0,
+    ) -> dict:
+        pool_rows = self.run_manager.list_pool_papers(run_id)
+        node_ids = [str((r.get("paper_id") or "")).strip().lower() for r in pool_rows if (r.get("paper_id") or "").strip()]
+        node_ids = list(dict.fromkeys(node_ids))
+        if not node_ids:
+            return {"operation": "rank", "mode": "pool", "items": [], "reason": "empty_pool"}
 
-        if not seeds:
-            out = {"operation": "rank", "seeds": [], "items": [], "reason": "no_seed_doi"}
+        node_set = set(node_ids)
+        pool_map = {str((r.get("paper_id") or "")).strip().lower(): r for r in pool_rows}
+
+        edges = self.repo.get_all_edges()
+        out_adj: dict[str, list[str]] = {n: [] for n in node_ids}
+        in_adj: dict[str, list[str]] = {n: [] for n in node_ids}
+        for src, dst in edges:
+            s = str(src).strip().lower()
+            d = str(dst).strip().lower()
+            if s in node_set and d in node_set:
+                out_adj[s].append(d)
+                in_adj[d].append(s)
+
+        meta_rows = self.repo.get_api_papers_by_ids(node_ids)
+        meta_map = {str(r.get("paper_id") or "").strip().lower(): r for r in meta_rows}
+
+        # Seed-biased initialization/personalization: boost initial search papers.
+        search = self.run_manager._try_read(run_id, "search.json") or {}
+        seed_ids: set[str] = set()
+        for p in (search.get("new_papers") or []):
+            pid = (p.get("paper_id") or "").strip().lower()
+            if pid and pid in node_set:
+                seed_ids.add(pid)
+                continue
+            d = _normalize_doi(p.get("doi"))
+            if d:
+                pid2 = f"doi:{d}"
+                if pid2 in node_set:
+                    seed_ids.add(pid2)
+
+        # On-the-fly seed rescue: if a seed has zero pool links and zero global counts,
+        # try live DOI ingest once to populate metadata/references/edges.
+        seed_rescue_max = max(0, min(int(seed_rescue_max), 20))
+        rescued = 0
+        if seed_rescue_max > 0 and seed_ids:
+            oa = OpenAlexClient()
+            cr = CrossrefClient()
+            now = _now_iso()
+            for sid in list(seed_ids):
+                if rescued >= seed_rescue_max:
+                    break
+                m = meta_map.get(sid, {})
+                in_pool = len(in_adj.get(sid, []))
+                out_pool = len(out_adj.get(sid, []))
+                in_g = int(_safe_float(m.get("citation_count"), 0.0))
+                out_g = int(_safe_float(m.get("reference_count"), 0.0))
+                if (in_pool + out_pool) > 0 or in_g > 0 or out_g > 0:
+                    continue
+
+                p = pool_map.get(sid, {})
+                d = _normalize_doi(m.get("doi")) or _normalize_doi(p.get("doi"))
+                if not d and sid.startswith("doi:"):
+                    d = _normalize_doi(sid[4:])
+                if not d:
+                    continue
+                d_lookup = self._resolve_arxiv_published_doi(d) or d
+
+                # 1) Quick metadata + count refresh from APIs.
+                try:
+                    ow = oa.work_by_doi(d_lookup)
+                except Exception:
+                    ow = {}
+                try:
+                    cw = cr.references_by_doi(d_lookup)
+                except Exception:
+                    cw = {}
+
+                cite = _pick_count_primary_fallback(ow.get("citation_count"), cw.get("citation_count"))
+                ref = _pick_count_primary_fallback(ow.get("reference_count"), cw.get("reference_count"))
+                title = (ow.get("title") or cw.get("title") or p.get("title") or m.get("title") or d or "").strip()
+                venue = (ow.get("venue") or cw.get("venue") or p.get("journal") or m.get("venue") or "").strip()
+                year = _year_from_any(ow.get("year")) or _year_from_any(cw.get("year")) or _year_from_any((p.get("publication_date") or "")[:4]) or _year_from_any(m.get("year"))
+                source = "openalex" if (ow.get("title") or "").strip() else ("crossref" if (cw.get("title") or "").strip() else (p.get("source") or m.get("source") or "seed_rescue"))
+
+                try:
+                    self.repo.upsert_api_paper(
+                        {
+                            "paper_id": sid,
+                            "doi": d,
+                            "openalex_id": None,
+                            "citation_count": cite,
+                            "reference_count": ref,
+                            "title": title or d,
+                            "year": year,
+                            "venue": venue,
+                            "abstract": (ow.get("abstract") or "").strip(),
+                            "source": source,
+                            "updated_at": now,
+                        }
+                    )
+                except Exception:
+                    pass
+
+                # 2) If references likely exist, try full ingest to materialize edges.
+                try:
+                    if ref > 0:
+                        self.graph_ingest_doi(doi=d, use_mock=False)
+                    rescued += 1
+                except Exception:
+                    continue
+
+            if rescued > 0:
+                edges = self.repo.get_all_edges()
+                out_adj = {n: [] for n in node_ids}
+                in_adj = {n: [] for n in node_ids}
+                for src, dst in edges:
+                    s = str(src).strip().lower()
+                    d = str(dst).strip().lower()
+                    if s in node_set and d in node_set:
+                        out_adj[s].append(d)
+                        in_adj[d].append(s)
+                meta_rows = self.repo.get_api_papers_by_ids(node_ids)
+                meta_map = {str(r.get("paper_id") or "").strip().lower(): r for r in meta_rows}
+
+        # Anchor paper boost: if query includes a specific DOI, preserve it across rounds.
+        run_meta = self.run_manager._try_read(run_id, "meta.json") or {}
+        anchor_doi = _normalize_doi(_extract_doi(run_meta.get("query") or ""))
+        anchor_pid = f"doi:{anchor_doi}" if anchor_doi else None
+        anchor_score_boost = max(1.0, min(float(anchor_score_boost), 10.0))
+
+        boost = max(1.0, float(seed_init_boost))
+        init_raw: dict[str, float] = {}
+        for pid in node_ids:
+            init_raw[pid] = boost if pid in seed_ids else 1.0
+        z = sum(init_raw.values()) or float(len(node_ids))
+
+        pers = {k: (init_raw[k] / z) for k in node_ids}
+        pr = {k: (init_raw[k] / z) for k in node_ids}
+        converged = False
+        iters = 0
+
+        for i in range(max_iter):
+            iters = i + 1
+            new_pr = {k: (1.0 - alpha) * pers[k] for k in node_ids}
+            dangling_mass = sum(pr[k] for k in node_ids if not out_adj[k])
+            for k in node_ids:
+                new_pr[k] += alpha * dangling_mass * pers[k]
+
+            for src in node_ids:
+                outs = out_adj[src]
+                if not outs:
+                    continue
+                share = alpha * pr[src] / float(len(outs))
+                for dst in outs:
+                    new_pr[dst] += share
+
+            delta = sum(abs(new_pr[k] - pr[k]) for k in node_ids)
+            pr = new_pr
+            if delta < tol:
+                converged = True
+                break
+
+        # Pool row metadata fallback improves visibility for non-ingested nodes.
+
+        # Anti-noise / quality priors (inspired by robust citation-ranking literature).
+        pool_bias_strength = max(0.0, min(float(pool_bias_strength), 1.0))
+        cred_scale = 50.0
+        support_scale = 12.0
+        recency_half_life = 20.0
+
+        items = []
+        for pid in node_ids:
+            m = meta_map.get(pid, {})
+            p = pool_map.get(pid, {})
+
+            doi = m.get("doi") or p.get("doi")
+            title = m.get("title") or p.get("title") or pid
+            year = m.get("year") if m.get("year") is not None else _year_from_any((p.get("publication_date") or "")[:4])
+            venue = m.get("venue") or p.get("journal") or ""
+            source = m.get("source") or p.get("source") or "fallback"
+
+            in_pool = len(in_adj.get(pid, []))
+            out_pool = len(out_adj.get(pid, []))
+            in_g = int(_safe_float(m.get("citation_count"), 0.0))
+            out_g = int(_safe_float(m.get("reference_count"), 0.0))
+
+            # Pool-vs-global shares (strict global semantics preserved).
+            cite_score = (float(in_pool) / float(max(in_g, 1))) if in_g > 0 else 0.0
+            ref_score = (float(out_pool) / float(max(out_g, 1))) if out_g > 0 else 0.0
+            pool_focus = 0.6 * cite_score + 0.4 * ref_score
+            # Non-linear pool bias: strongly suppress tiny in-pool/global overlap.
+            pool_focus_sqrt = math.sqrt(max(pool_focus, 0.0))
+            pool_factor = (1.0 - pool_bias_strength) * pool_focus_sqrt + pool_bias_strength * pool_focus
+            if pid in seed_ids:
+                pool_factor = max(pool_factor, max(0.0, min(float(seed_pool_factor_floor), 0.5)))
+
+            # Reliability: very small global count totals are noisy and overconfident.
+            cred_raw = 1.0 - math.exp(-float(max(in_g, 0) + max(out_g, 0)) / cred_scale)
+            credibility = 0.2 + 0.8 * cred_raw
+
+            # Local support: reward papers that are substantively connected inside this run pool.
+            support_raw = 1.0 - math.exp(-float(max(in_pool, 0) + max(out_pool, 0)) / support_scale)
+            support = 0.3 + 0.7 * support_raw
+
+            # Structural balance: penalize one-sided hub artifacts (e.g., cited-only classics / dangling noise).
+            ssum = float(in_pool + out_pool)
+            if ssum <= 0.0:
+                balance = 0.0
+            else:
+                balance = (2.0 * float(in_pool) * float(out_pool)) / (ssum * ssum)
+            structure = 0.4 + 0.6 * balance
+
+            # Mild recency prior to reduce old-paper dominance (can be neutral if year missing).
+            y = _year_from_any(year)
+            cur_year = datetime.now(timezone.utc).year
+            age = float(max(0, cur_year - y)) if y is not None else recency_half_life
+            recency = max(0.45, math.exp(-age / recency_half_life))
+
+            # Metadata quality prior: down-weight fallback/low-quality records.
+            quality = 1.0
+            if str(source).strip().lower() == "fallback":
+                quality *= 0.65
+            if y is None:
+                quality *= 0.85
+            tnorm = str(title or "").strip().lower()
+            if not tnorm or _is_likely_doi(tnorm):
+                quality *= 0.85
+
+            pr_value = float(pr.get(pid) or 0.0)
+            adjusted = pr_value * pool_factor * credibility * support * structure * recency * quality
+            is_anchor = bool(anchor_pid and pid == anchor_pid)
+            if is_anchor:
+                adjusted *= anchor_score_boost
+
+            items.append(
+                {
+                    "paper_id": pid,
+                    "doi": doi,
+                    "title": title,
+                    "year": year,
+                    "venue": venue,
+                    "source": source,
+                    "citation_count": m.get("citation_count"),
+                    "reference_count": m.get("reference_count"),
+                    "score": round(float(adjusted), 8),
+                    "pagerank": round(float(pr_value), 8),
+                    "cite_in_pool": in_pool,
+                    "cite_global": in_g,
+                    "ref_in_pool": out_pool,
+                    "ref_global": out_g,
+                    "cite_score": round(float(cite_score), 8),
+                    "ref_score": round(float(ref_score), 8),
+                    "pool_focus": round(float(pool_focus), 8),
+                    "pool_factor": round(float(pool_factor), 8),
+                    "credibility": round(float(credibility), 8),
+                    "support": round(float(support), 8),
+                    "structure": round(float(structure), 8),
+                    "recency": round(float(recency), 8),
+                    "quality": round(float(quality), 8),
+                    "is_anchor": is_anchor,
+                    "anchor_score_boost": (anchor_score_boost if is_anchor else 1.0),
+                }
+            )
+        items.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+
+        # If query anchors a specific DOI, keep that anchor at the top for paper-centric runs.
+        if anchor_pid:
+            anchor_idx = next((i for i, it in enumerate(items) if str(it.get("paper_id") or "").strip().lower() == anchor_pid), None)
+            if anchor_idx is not None and anchor_idx > 0 and items:
+                top_score = float(items[0].get("score") or 0.0)
+                anchor_item = dict(items[anchor_idx])
+                anchor_item["score"] = round(top_score + 1e-8, 8)
+                items = [anchor_item] + items[:anchor_idx] + items[anchor_idx + 1 :]
+
+        total_ranked = len(items)
+        for i, it in enumerate(items, start=1):
+            it["rank"] = i
+            it["rank_total"] = total_ranked
+            it["rank_over_total"] = f"{i}/{total_ranked}"
+
+        return {
+            "operation": "rank",
+            "mode": "pool",
+            "pool_size": len(node_ids),
+            "iterations": iters,
+            "converged": converged,
+            "params": {
+                "limit": max(1, min(int(limit), 5000)),
+                "alpha": alpha,
+                "max_iter": max_iter,
+                "tol": tol,
+                "pool_bias_strength": pool_bias_strength,
+                "seed_init_boost": boost,
+                "seed_count": len(seed_ids),
+                "seed_pool_factor_floor": seed_pool_factor_floor,
+                "seed_rescue_max": seed_rescue_max,
+                "seed_rescued": rescued,
+                "anchor_doi": anchor_doi,
+                "anchor_score_boost": anchor_score_boost,
+            },
+            "items": items[: max(1, min(int(limit), 5000))],
+        }
+
+    def run_rank(
+        self,
+        run_id: str,
+        limit: int = 20,
+        fallback_seed_max: int = 5,
+        mode: str = "pool",
+        pool_bias_strength: float = 0.8,
+        seed_init_boost: float = 3.0,
+        seed_pool_factor_floor: float = 0.06,
+        seed_rescue_max: int = 8,
+        anchor_score_boost: float = 4.0,
+    ) -> dict:
+        t0 = time.perf_counter()
+        if mode == "pool":
+            out = self._rank_within_run_pool(
+                run_id=run_id,
+                limit=limit,
+                pool_bias_strength=pool_bias_strength,
+                seed_init_boost=seed_init_boost,
+                seed_pool_factor_floor=seed_pool_factor_floor,
+                seed_rescue_max=seed_rescue_max,
+                anchor_score_boost=anchor_score_boost,
+            )
+            seeds = []
         else:
-            out = self.graph_rank(seeds=seeds, limit=limit, include_seeds=False)
-            out["operation"] = "rank"
+            seeds = self._run_seed_dois(run_id, fallback_max=fallback_seed_max)
+            for d in seeds[:8]:
+                try:
+                    if self.repo.get_api_paper_by_doi(d) is None:
+                        self.graph_ingest_doi(doi=d, use_mock=False)
+                except Exception:
+                    pass
+
+            if not seeds:
+                out = {"operation": "rank", "seeds": [], "items": [], "reason": "no_seed_doi"}
+            else:
+                out = self.graph_rank(seeds=seeds, limit=limit, include_seeds=False)
+                out["operation"] = "rank"
 
         self.run_manager.write_json(run_id, "rank.json", out)
         self.run_manager.append_event(
             run_id=run_id,
             op="rank",
             status="ok",
-            input_payload={"seeds": seeds, "limit": limit},
+            input_payload={
+                "seeds": seeds,
+                "limit": limit,
+                "mode": mode,
+                "pool_bias_strength": pool_bias_strength,
+                "seed_init_boost": seed_init_boost,
+                "seed_pool_factor_floor": seed_pool_factor_floor,
+                "seed_rescue_max": seed_rescue_max,
+                "anchor_score_boost": anchor_score_boost,
+            },
             output_file="rank.json",
             summary=f"rank_items={len(out.get('items') or [])}",
             meta={
@@ -1573,6 +2085,289 @@ class AppService:
         )
         return out
 
+    def run_mine(
+        self,
+        query: str,
+        search_top_k: int = 16,
+        min_seed_count: int = 16,
+        crossref_rows: int = 40,
+        grow_limit_per_node: int = 20,
+        round2_top_k: int = 12,
+        pool_bias_strength: float = 0.8,
+        seed_init_boost: float = 3.0,
+        seed_pool_factor_floor: float = 0.06,
+        seed_rescue_max: int = 8,
+        anchor_score_boost: float = 4.0,
+        backfill_limit_round1: int = 4000,
+        backfill_limit_round2: int = 6000,
+    ) -> dict:
+        t0 = time.perf_counter()
+        meta = self.run_start(query)
+        run_id = meta["run_id"]
+        run_dir = self.run_manager.run_dir(run_id)
+        stage_log_path = run_dir / "pipeline_mine.log.jsonl"
+
+        stage_rows: list[dict[str, Any]] = []
+
+        def _log(stage: str, payload: dict[str, Any]) -> None:
+            row = {"ts": _now_iso(), "stage": stage, **payload}
+            stage_rows.append(row)
+            with stage_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        # Round 1
+        t = time.perf_counter()
+        search1 = self.run_search(
+            run_id,
+            prompt=query,
+            top_k=search_top_k,
+            min_seed_count=min_seed_count,
+            crossref_rows=crossref_rows,
+        )
+        self.run_manager.write_json(run_id, "search_round1.json", search1)
+        _log("round1_search", {"duration_ms": _ms_since(t), "new_paper_count": int(search1.get("new_paper_count") or 0)})
+
+        t = time.perf_counter()
+        grow1 = self.run_grow(run_id, levels=1, limit_per_node=grow_limit_per_node, seed_strategy="search_pool")
+        self.run_manager.write_json(run_id, "grow_round1.json", grow1)
+        _log("round1_grow", {"duration_ms": _ms_since(t), "total_discovered_unique": int(grow1.get("total_discovered_unique") or 0)})
+
+        t = time.perf_counter()
+        bf1 = self.graph_backfill_counts(run_id=run_id, limit=backfill_limit_round1, max_workers=4)
+        self.run_manager.write_json(run_id, "counts_backfill_round1.json", bf1)
+        _log("round1_backfill", {"duration_ms": _ms_since(t), **bf1})
+
+        t = time.perf_counter()
+        pool_size1 = len(self.run_manager.list_pool_papers(run_id))
+        rank1 = self.run_rank(
+            run_id,
+            limit=max(1, pool_size1),
+            mode="pool",
+            pool_bias_strength=pool_bias_strength,
+            seed_init_boost=seed_init_boost,
+            seed_pool_factor_floor=seed_pool_factor_floor,
+            seed_rescue_max=seed_rescue_max,
+            anchor_score_boost=anchor_score_boost,
+        )
+        self.run_manager.write_json(run_id, "rank_round1_full.json", rank1)
+        with (run_dir / "rank_round1_full.log").open("w", encoding="utf-8") as f:
+            for it in rank1.get("items") or []:
+                f.write(
+                    f"{int(it.get('rank') or 0):04d}\t{float(it.get('score') or 0.0):.10f}\t{it.get('rank_over_total') or ''}\t"
+                    f"{it.get('doi') or ''}\t{it.get('title') or ''}\n"
+                )
+        _log("round1_rank", {"duration_ms": _ms_since(t), "pool_size": pool_size1, "rank_items": len(rank1.get("items") or [])})
+
+        # Round 2 seed union: initial search seeds + top-k ranked papers from round1
+        initial_seed_dois = [
+            _normalize_doi(p.get("doi"))
+            for p in (search1.get("new_papers") or [])
+            if _normalize_doi(p.get("doi"))
+        ]
+        ranked_top_dois: list[str] = []
+        for it in (rank1.get("items") or [])[: max(1, min(int(round2_top_k), 200))]:
+            d = _normalize_doi(it.get("doi"))
+            if d:
+                ranked_top_dois.append(d)
+        seed_union = list(dict.fromkeys(initial_seed_dois + ranked_top_dois))
+        seed_union_obj = {
+            "round2_top_k": int(round2_top_k),
+            "initial_seed_count": len(initial_seed_dois),
+            "rank_top_k_count": len(ranked_top_dois),
+            "union_count": len(seed_union),
+            "seed_dois": seed_union,
+        }
+        self.run_manager.write_json(run_id, "round2_seed_union.json", seed_union_obj)
+        _log("round2_seed_prep", seed_union_obj)
+
+        # Round 2 search: query each top-k round1 paper title individually, then merge.
+        t = time.perf_counter()
+        title_queries: list[str] = []
+        seen_titles: set[str] = set()
+        for it in (rank1.get("items") or [])[: max(1, min(int(round2_top_k), 200))]:
+            q = (it.get("title") or "").strip()
+            if not q:
+                continue
+            k = _normalize_text(q)
+            if not k or k in seen_titles:
+                continue
+            seen_titles.add(k)
+            title_queries.append(q)
+
+        per_title: list[dict[str, Any]] = []
+        merged_round2_papers: list[dict[str, Any]] = []
+        for q in title_queries:
+            t_one = time.perf_counter()
+            try:
+                one = self.op_search(
+                    prompt=q,
+                    top_k=search_top_k,
+                    min_seed_count=min_seed_count,
+                    crossref_rows=crossref_rows,
+                )
+                per_title.append(
+                    {
+                        "title_query": q,
+                        "ok": True,
+                        "duration_ms": _ms_since(t_one),
+                        "new_paper_count": int(one.get("new_paper_count") or 0),
+                        "query_id": one.get("query_id"),
+                        "items": one.get("new_papers") or [],
+                    }
+                )
+                merged_round2_papers = self._merge_unique_seeds(merged_round2_papers, one.get("new_papers") or [], limit=5000)
+            except Exception as e:
+                per_title.append(
+                    {
+                        "title_query": q,
+                        "ok": False,
+                        "duration_ms": _ms_since(t_one),
+                        "error": str(e),
+                        "new_paper_count": 0,
+                        "items": [],
+                    }
+                )
+
+        search2 = {
+            "operation": "search_round2",
+            "strategy": "topk_titles_individual_search",
+            "title_query_count": len(title_queries),
+            "title_queries": title_queries,
+            "per_title": per_title,
+            "new_papers": merged_round2_papers,
+            "new_paper_count": len(merged_round2_papers),
+        }
+        self.run_manager.write_json(run_id, "search_round2.json", search2)
+        pool_stats_search2 = self.run_manager.upsert_pool(run_id, papers=search2.get("new_papers") or [], source_op="search_round2")
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="search_round2",
+            status="ok",
+            input_payload={
+                "strategy": "topk_titles_individual_search",
+                "title_query_count": len(title_queries),
+                "top_k": search_top_k,
+                "min_seed_count": min_seed_count,
+                "crossref_rows": crossref_rows,
+            },
+            output_file="search_round2.json",
+            summary=f"new_paper_count={search2.get('new_paper_count', 0)} pool_size={pool_stats_search2.get('pool_size', 0)}",
+        )
+        _log(
+            "round2_search",
+            {
+                "duration_ms": _ms_since(t),
+                "strategy": "topk_titles_individual_search",
+                "title_query_count": len(title_queries),
+                "new_paper_count": int(search2.get("new_paper_count") or 0),
+                "pool": pool_stats_search2,
+            },
+        )
+
+        # Round 2 grow using seed union
+        t = time.perf_counter()
+        grow2 = self.op_grow(seeds=seed_union, levels=1, limit_per_node=grow_limit_per_node, use_mock=False)
+        self.run_manager.write_json(run_id, "grow_round2.json", grow2)
+        grow2_papers = []
+        for lv in grow2.get("results", []) or []:
+            for p in lv.get("papers", []) or []:
+                grow2_papers.append(
+                    {
+                        "paper_id": p.get("paper_id"),
+                        "doi": p.get("doi"),
+                        "title": p.get("title"),
+                        "journal": p.get("venue"),
+                        "publication_date": (f"{p.get('year')}-01-01" if p.get("year") else None),
+                        "source": p.get("source") or "grow_round2",
+                        "abstract": "",
+                    }
+                )
+        pool_stats_grow2 = self.run_manager.upsert_pool(run_id, papers=grow2_papers, source_op="grow_round2")
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="grow_round2",
+            status="ok",
+            input_payload={"seed_count": len(seed_union), "levels": 1, "limit_per_node": grow_limit_per_node},
+            output_file="grow_round2.json",
+            summary=f"total_discovered_unique={grow2.get('total_discovered_unique', 0)} pool_size={pool_stats_grow2.get('pool_size', 0)}",
+        )
+        _log("round2_grow", {"duration_ms": _ms_since(t), "total_discovered_unique": int(grow2.get("total_discovered_unique") or 0), "pool": pool_stats_grow2})
+
+        t = time.perf_counter()
+        bf2 = self.graph_backfill_counts(run_id=run_id, limit=backfill_limit_round2, max_workers=4)
+        self.run_manager.write_json(run_id, "counts_backfill_round2.json", bf2)
+        _log("round2_backfill", {"duration_ms": _ms_since(t), **bf2})
+
+        t = time.perf_counter()
+        pool_size2 = len(self.run_manager.list_pool_papers(run_id))
+        rank2 = self.run_rank(
+            run_id,
+            limit=max(1, pool_size2),
+            mode="pool",
+            pool_bias_strength=pool_bias_strength,
+            seed_init_boost=seed_init_boost,
+            seed_pool_factor_floor=seed_pool_factor_floor,
+            seed_rescue_max=seed_rescue_max,
+            anchor_score_boost=anchor_score_boost,
+        )
+        self.run_manager.write_json(run_id, "rank_round2_full.json", rank2)
+        with (run_dir / "rank_round2_full.log").open("w", encoding="utf-8") as f:
+            for it in rank2.get("items") or []:
+                f.write(
+                    f"{int(it.get('rank') or 0):04d}\t{float(it.get('score') or 0.0):.10f}\t{it.get('rank_over_total') or ''}\t"
+                    f"{it.get('doi') or ''}\t{it.get('title') or ''}\n"
+                )
+        _log("round2_rank", {"duration_ms": _ms_since(t), "pool_size": pool_size2, "rank_items": len(rank2.get("items") or [])})
+
+        report = self.run_report(run_id)
+
+        summary = {
+            "operation": "mine",
+            "run_id": run_id,
+            "query": query,
+            "top_k_round2": int(round2_top_k),
+            "pool_size_round1": pool_size1,
+            "pool_size_round2": pool_size2,
+            "round1_top": (rank1.get("items") or [])[:10],
+            "round2_top": (rank2.get("items") or [])[:10],
+            "artifacts": {
+                "stage_log": str(stage_log_path),
+                "search_round1": str(run_dir / "search_round1.json"),
+                "grow_round1": str(run_dir / "grow_round1.json"),
+                "counts_backfill_round1": str(run_dir / "counts_backfill_round1.json"),
+                "rank_round1_full": str(run_dir / "rank_round1_full.json"),
+                "rank_round1_log": str(run_dir / "rank_round1_full.log"),
+                "round2_seed_union": str(run_dir / "round2_seed_union.json"),
+                "search_round2": str(run_dir / "search_round2.json"),
+                "grow_round2": str(run_dir / "grow_round2.json"),
+                "counts_backfill_round2": str(run_dir / "counts_backfill_round2.json"),
+                "rank_round2_full": str(run_dir / "rank_round2_full.json"),
+                "rank_round2_log": str(run_dir / "rank_round2_full.log"),
+                "report_md": report.get("report_md"),
+                "report_json": report.get("report_json"),
+            },
+            "duration_ms": _ms_since(t0),
+        }
+        self.run_manager.write_json(run_id, "mine_summary.json", summary)
+        self.run_manager.append_event(
+            run_id=run_id,
+            op="mine",
+            status="ok",
+            input_payload={
+                "query": query,
+                "search_top_k": search_top_k,
+                "min_seed_count": min_seed_count,
+                "crossref_rows": crossref_rows,
+                "grow_limit_per_node": grow_limit_per_node,
+                "round2_top_k": round2_top_k,
+                "anchor_score_boost": anchor_score_boost,
+            },
+            output_file="mine_summary.json",
+            summary=f"pool_round1={pool_size1} pool_round2={pool_size2}",
+            meta={"perf": {"duration_ms": _ms_since(t0)}},
+        )
+        return summary
+
     def relevance_classify_query_id(
         self,
         topic: str,
@@ -1737,6 +2532,31 @@ class AppService:
             extra_refs.extend(external.get(src, {}).get("references", []) or [])
 
         merged_refs = _merge_reference_rows(base_refs, extra_refs)
+
+        oa_ref_count = int(external.get("openalex", {}).get("reference_count") or 0)
+        oa_cite_count = int(external.get("openalex", {}).get("citation_count") or 0)
+        cr_ref_count = int(external.get("crossref", {}).get("reference_count") or 0)
+        cr_cite_count = int(external.get("crossref", {}).get("citation_count") or 0)
+
+        # Fast + robust policy: OpenAlex primary, Crossref fallback.
+        reference_count_global = _pick_count_primary_fallback(oa_ref_count, cr_ref_count)
+        citation_count_global = _pick_count_primary_fallback(oa_cite_count, cr_cite_count)
+        self.repo.upsert_api_paper(
+            {
+                "paper_id": paper_id,
+                "doi": doi_norm,
+                "openalex_id": None,
+                "citation_count": citation_count_global,
+                "reference_count": reference_count_global,
+                "title": (n.get("title") or doi_norm),
+                "year": _year_from_metadata(n),
+                "venue": ((n.get("metadata") or {}).get("journal") or ""),
+                "abstract": (n.get("abstract") or ""),
+                "source": out.get("fetch", {}).get("source") or "ingest",
+                "updated_at": now,
+            }
+        )
+
         refs = [
             {
                 "src_paper_id": paper_id,
@@ -1781,6 +2601,201 @@ class AppService:
             "duration_ms": _ms_since(t0),
             "graph_stats": self.repo.get_graph_stats(),
         }
+
+    def _resolve_arxiv_published_doi(self, doi: str | None) -> str | None:
+        d = _normalize_doi(doi)
+        if not d or not d.startswith("10.48550/arxiv."):
+            return None
+        arxiv_id = d[len("10.48550/arxiv.") :].strip()
+        if not arxiv_id:
+            return None
+        try:
+            url = f"http://export.arxiv.org/api/query?id_list={arxiv_id}"
+            req = urllib.request.Request(url, headers={"User-Agent": "curl/8.5.0"}, method="GET")
+            raw = urllib.request.urlopen(req, timeout=20).read()
+            root = ET.fromstring(raw)
+            ns = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+            entry = root.find("a:entry", ns)
+            if entry is None:
+                return None
+            pd = (entry.findtext("arxiv:doi", default="", namespaces=ns) or "").strip()
+            pd = _normalize_doi(pd)
+            if pd and pd != d:
+                return pd
+        except Exception:
+            return None
+        return None
+
+    def graph_backfill_counts(self, run_id: str | None = None, limit: int = 500, max_workers: int = 4) -> dict:
+        """In-place metadata refresh for older rows missing citation/reference counts.
+
+        Fast+robust policy:
+          - OpenAlex counts primary
+          - Crossref counts fallback
+        """
+        t0 = time.perf_counter()
+        max_workers = max(1, min(int(max_workers), 8))
+        limit = max(1, min(int(limit), 5000))
+
+        if run_id:
+            pool_rows = self.run_manager.list_pool_papers(run_id)
+            dois = [
+                _normalize_doi(x.get("doi"))
+                for x in pool_rows
+                if _normalize_doi(x.get("doi"))
+            ]
+            dois = list(dict.fromkeys(dois))[:limit]
+            candidates = [{"doi": d} for d in dois]
+        else:
+            candidates = self.repo.list_api_papers_missing_counts(limit=limit)
+            dois = [
+                _normalize_doi(x.get("doi"))
+                for x in candidates
+                if _normalize_doi(x.get("doi"))
+            ]
+
+        oa = OpenAlexClient()
+        cr = CrossrefClient()
+        now = _now_iso()
+
+        def _fetch_counts(doi: str) -> dict[str, Any]:
+            candidates = [doi]
+            alias = self._resolve_arxiv_published_doi(doi)
+            if alias and alias not in candidates:
+                candidates.append(alias)
+
+            best: dict[str, Any] | None = None
+            best_score = -1
+
+            for qdoi in candidates:
+                ow = oa.work_by_doi(qdoi)
+                oc = int(_safe_float(ow.get("citation_count"), 0.0))
+                orf = int(_safe_float(ow.get("reference_count"), 0.0))
+
+                cw = cr.references_by_doi(qdoi)
+                cc = int(_safe_float(cw.get("citation_count"), 0.0))
+                crf = int(_safe_float(cw.get("reference_count"), 0.0))
+
+                cite = _pick_count_primary_fallback(oc, cc)
+                ref = _pick_count_primary_fallback(orf, crf)
+                src = "openalex" if (oc > 0 or orf > 0 or (ow.get("title") or "").strip()) else ("crossref" if (cc > 0 or crf > 0 or (cw.get("title") or "").strip()) else "none")
+
+                score = int(cite + ref)
+                if (ow.get("title") or "").strip():
+                    score += 3
+                if src == "openalex":
+                    score += 1
+
+                row = {
+                    "doi": doi,
+                    "query_doi": qdoi,
+                    "alias_used": bool(alias and qdoi == alias),
+                    "cite": cite,
+                    "ref": ref,
+                    "src": src,
+                    "oa": ow,
+                    "cr": cw,
+                }
+                if score > best_score:
+                    best_score = score
+                    best = row
+
+            return best or {"doi": doi, "query_doi": doi, "alias_used": False, "cite": 0, "ref": 0, "src": "none", "oa": {}, "cr": {}}
+
+        updated = 0
+        missing = 0
+        source_counts = {"openalex": 0, "crossref": 0, "none": 0}
+        metadata_overwritten = 0
+        alias_used_count = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {ex.submit(_fetch_counts, d): d for d in dois}
+            for fut in as_completed(futs):
+                d = futs[fut]
+                try:
+                    got = fut.result() or {}
+                    doi = _normalize_doi(got.get("doi")) or d
+                    cite = int(_safe_float(got.get("cite"), 0.0))
+                    ref = int(_safe_float(got.get("ref"), 0.0))
+                    src = str(got.get("src") or "none")
+                    ow = got.get("oa") or {}
+                    cw = got.get("cr") or {}
+                    if bool(got.get("alias_used")):
+                        alias_used_count += 1
+                except Exception:
+                    missing += 1
+                    continue
+
+                source_counts[src] = source_counts.get(src, 0) + 1
+
+                # Overwrite/fill core metadata (title/year/venue/source) from OA primary, CR fallback.
+                existing = self.repo.get_api_paper_by_doi(doi)
+                ex_title = (existing["title"] if existing and existing["title"] is not None else "") if existing else ""
+                ex_year = int(existing["year"]) if existing and existing["year"] is not None else None
+                ex_venue = (existing["venue"] if existing and existing["venue"] is not None else "") if existing else ""
+                ex_abstract = (existing["abstract"] if existing and existing["abstract"] is not None else "") if existing else ""
+                ex_source = (existing["source"] if existing and existing["source"] is not None else "") if existing else ""
+                ex_cite = int(existing["citation_count"]) if existing and existing["citation_count"] is not None else 0
+                ex_ref = int(existing["reference_count"]) if existing and existing["reference_count"] is not None else 0
+
+                oa_title = (ow.get("title") or "").strip()
+                cr_title = (cw.get("title") or "").strip()
+                title = oa_title or cr_title or ex_title or doi
+                if _is_likely_doi(title):
+                    title = ex_title if ex_title and not _is_likely_doi(ex_title) else title
+
+                year = _year_from_any(ow.get("year")) or _year_from_any(cw.get("year")) or ex_year
+                venue = (ow.get("venue") or "").strip() or (cw.get("venue") or "").strip() or ex_venue
+                abstract = (ow.get("abstract") or "").strip() or ex_abstract
+                row_source = "openalex" if oa_title else ("crossref" if cr_title else (ex_source or src or "openalex"))
+
+                out_cite = cite if cite > 0 else ex_cite
+                out_ref = ref if ref > 0 else ex_ref
+
+                self.repo.upsert_api_paper(
+                    {
+                        "paper_id": (existing["paper_id"] if existing and existing["paper_id"] else f"doi:{doi}"),
+                        "doi": doi,
+                        "openalex_id": None,
+                        "citation_count": out_cite,
+                        "reference_count": out_ref,
+                        "title": title or doi,
+                        "year": year,
+                        "venue": venue,
+                        "abstract": abstract,
+                        "source": row_source,
+                        "updated_at": now,
+                    }
+                )
+                metadata_overwritten += 1
+
+                if out_cite <= 0 and out_ref <= 0:
+                    missing += 1
+                    continue
+                updated += 1
+
+        out = {
+            "operation": "graph_backfill_counts",
+            "run_id": run_id,
+            "attempted": len(dois),
+            "updated": updated,
+            "missing": missing,
+            "metadata_overwritten": metadata_overwritten,
+            "alias_used_count": alias_used_count,
+            "source_counts": source_counts,
+            "duration_ms": _ms_since(t0),
+        }
+        if run_id:
+            self.run_manager.write_json(run_id, "counts_backfill.json", out)
+            self.run_manager.append_event(
+                run_id=run_id,
+                op="counts_backfill",
+                status="ok",
+                input_payload={"limit": limit, "max_workers": max_workers},
+                output_file="counts_backfill.json",
+                summary=f"updated={updated}/{len(dois)}",
+            )
+        return out
 
     def graph_ingest_openalex_journals(self, journals: list[str], per_journal: int = 10) -> dict:
         journals = [j.strip() for j in journals if j and j.strip()]
@@ -1844,6 +2859,21 @@ class AppService:
                         }
                     )
                 self.repo.replace_api_references(src_paper_id=pid, refs=refs)
+                self.repo.upsert_api_paper(
+                    {
+                        "paper_id": pid,
+                        "doi": doi,
+                        "openalex_id": OpenAlexClient._openalex_id(w.get("id")),
+                        "citation_count": int(w.get("cited_by_count") or 0),
+                        "reference_count": int(ref_payload.get("reference_count") or len(refs)),
+                        "title": title,
+                        "year": year,
+                        "venue": venue,
+                        "abstract": abstract,
+                        "source": "openalex",
+                        "updated_at": now,
+                    }
+                )
                 src_pids.append(pid)
                 r_ingested += len(refs)
 
@@ -1901,6 +2931,7 @@ class AppService:
                             "doi": doi,
                             "openalex_id": openalex_id,
                             "citation_count": int(w.get("cited_by_count") or 0),
+                            "reference_count": len(w.get("referenced_works") or []),
                             "title": (w.get("display_name") or doi).strip(),
                             "year": w.get("publication_year"),
                             "venue": ((w.get("primary_location") or {}).get("source") or {}).get("display_name") or journal,

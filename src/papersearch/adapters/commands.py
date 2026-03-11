@@ -115,6 +115,7 @@ def run_command(svc: AppService, command: str, args: dict[str, Any]) -> dict[str
             model=args.get("model", "glm-4.5-flash"),
             thinking=args.get("thinking", "off"),
             max_workers=int(args.get("max_workers", 2)),
+            batch_size=int(args.get("batch_size", 5)),
         )
     if command == "op-grow":
         seeds_raw = args.get("seeds", "")
@@ -124,6 +125,22 @@ def run_command(svc: AppService, command: str, args: dict[str, Any]) -> dict[str
             levels=int(args.get("levels", 2)),
             limit_per_node=int(args.get("limit_per_node", 30)),
             use_mock=bool(args.get("mock", False)),
+        )
+    if command == "mine":
+        return svc.run_mine(
+            query=str(args["query"]),
+            search_top_k=int(args.get("search_top_k", 16)),
+            min_seed_count=int(args.get("min_seed_count", 16)),
+            crossref_rows=int(args.get("crossref_rows", 40)),
+            grow_limit_per_node=int(args.get("grow_limit_per_node", 20)),
+            round2_top_k=int(args.get("round2_top_k", 12)),
+            pool_bias_strength=float(args.get("pool_bias_strength", 0.8)),
+            seed_init_boost=float(args.get("seed_init_boost", 3.0)),
+            seed_pool_factor_floor=float(args.get("seed_pool_factor_floor", 0.06)),
+            seed_rescue_max=int(args.get("seed_rescue_max", 8)),
+            anchor_score_boost=float(args.get("anchor_score_boost", 4.0)),
+            backfill_limit_round1=int(args.get("backfill_limit_round1", 4000)),
+            backfill_limit_round2=int(args.get("backfill_limit_round2", 6000)),
         )
     if command == "ingest-doi":
         return ingest_doi(

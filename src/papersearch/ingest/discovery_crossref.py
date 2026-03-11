@@ -91,10 +91,23 @@ class CrossrefClient:
                 raw = " ".join(x for x in parts if x).strip()
             out_refs.append({"doi": doi_ref, "raw_text": raw})
 
+        title = ((msg.get("title") or [""])[0] or "").strip()
+        venue = ((msg.get("container-title") or [""])[0] or "").strip()
+        year = None
+        date_parts = ((msg.get("issued") or {}).get("date-parts") or [])
+        if date_parts and date_parts[0]:
+            try:
+                year = int(date_parts[0][0])
+            except Exception:
+                year = None
+
         return {
             "source": "crossref",
             "references": out_refs,
             "reference_count": int(msg.get("reference-count") or len(out_refs)),
             "citation_count": int(msg.get("is-referenced-by-count") or 0),
+            "title": title,
+            "year": year,
+            "venue": venue,
             "error": None,
         }

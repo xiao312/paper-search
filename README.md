@@ -36,6 +36,8 @@ papersearch relevance-classify-queryid "ammonia natural gas combustion kinetics 
 papersearch op-search "ammonia natural gas combustion kinetics with deep learning surrogates" --top-k 20 --min-seed-count 5 --crossref-rows 30 --json
 papersearch op-classify "ammonia natural gas combustion kinetics with deep learning surrogates" <query_id> --top-k 20 --json
 papersearch op-grow "10.1016/j.fuel.2026.138904" --levels 2 --limit-per-node 30 --json
+# end-to-end 2-round mining loop (search->grow->rank, then search->grow->rank)
+papersearch mine "ammonia natural gas combustion kinetics with deep learning surrogates" --round2-top-k 12 --json
 papersearch ingest-doi 10.1016/j.mock.2024.123456 --mock --json
 # live: try Elsevier XML + download figure assets when available
 papersearch ingest-doi 10.1016/j.egyai.2024.100341 --json
@@ -53,6 +55,12 @@ papersearch graph backfill-openalex-journal "Proceedings of the Combustion Insti
 papersearch graph expand "10.1016/j.proci.2020.06.375" --rounds 2 --max-new-per-round 100 --max-workers 2 --json
 papersearch graph rank "10.1016/j.proci.2020.06.375" --limit 20 --max-iter 100 --tol 1e-7 --json
 ```
+
+`papersearch mine ...` writes a run folder with full stage logs and both full rank lists:
+- `pipeline_mine.log.jsonl`
+- `rank_round1_full.json` + `rank_round1_full.log`
+- `rank_round2_full.json` + `rank_round2_full.log`
+- `mine_summary.json`, `report.md`, `report.json`
 
 ## MCP quick check
 
