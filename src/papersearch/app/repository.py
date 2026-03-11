@@ -85,6 +85,7 @@ class Repo:
                     doi_norm TEXT,
                     openalex_id TEXT,
                     citation_count INTEGER,
+                    reference_count INTEGER,
                     title TEXT NOT NULL,
                     year INTEGER,
                     venue TEXT,
@@ -121,6 +122,7 @@ class Repo:
             )
             self._ensure_column(conn, "api_papers", "openalex_id", "TEXT")
             self._ensure_column(conn, "api_papers", "citation_count", "INTEGER")
+            self._ensure_column(conn, "api_papers", "reference_count", "INTEGER")
             self._ensure_column(conn, "api_papers", "doi_norm", "TEXT")
             self._ensure_column(conn, "api_references", "ref_openalex_id", "TEXT")
             self._ensure_column(conn, "api_references", "doi_norm", "TEXT")
@@ -212,16 +214,18 @@ class Repo:
         row = dict(row)
         row["doi"] = _norm_doi(row.get("doi")) or row.get("doi")
         row["doi_norm"] = _norm_doi(row.get("doi"))
+        row.setdefault("reference_count", None)
         with self._conn() as conn:
             conn.execute(
                 """
-                INSERT INTO api_papers(paper_id, doi, doi_norm, openalex_id, citation_count, title, year, venue, abstract, source, updated_at)
-                VALUES(:paper_id, :doi, :doi_norm, :openalex_id, :citation_count, :title, :year, :venue, :abstract, :source, :updated_at)
+                INSERT INTO api_papers(paper_id, doi, doi_norm, openalex_id, citation_count, reference_count, title, year, venue, abstract, source, updated_at)
+                VALUES(:paper_id, :doi, :doi_norm, :openalex_id, :citation_count, :reference_count, :title, :year, :venue, :abstract, :source, :updated_at)
                 ON CONFLICT(doi) DO UPDATE SET
                   paper_id=excluded.paper_id,
                   doi_norm=excluded.doi_norm,
                   openalex_id=excluded.openalex_id,
                   citation_count=excluded.citation_count,
+                  reference_count=excluded.reference_count,
                   title=excluded.title,
                   year=excluded.year,
                   venue=excluded.venue,
@@ -276,13 +280,39 @@ class Repo:
         with self._conn() as conn:
             rows = conn.execute(
                 f"""
-                SELECT paper_id, doi, title, year, venue, source, citation_count
+                SELECT paper_id, doi, title, year, venue, source, citation_count, reference_count
                 FROM api_papers
                 WHERE paper_id IN ({placeholders})
                 """,
                 paper_ids,
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_api_papers_missing_counts(self, limit: int = 1000) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT paper_id, doi, title, citation_count, reference_count
+                FROM api_papers
+                WHERE (citation_count IS NULL OR reference_count IS NULL)
+                  AND doi IS NOT NULL AND trim(doi) != ''
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_api_paper_counts(self, doi: str, citation_count: int | None, reference_count: int | None, updated_at: str) -> None:
+        doi_norm = _norm_doi(doi)
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE api_papers
+                SET citation_count = ?, reference_count = ?, updated_at = ?
+                WHERE doi_norm = ?
+                """,
+                (citation_count, reference_count, updated_at, doi_norm),
+            )
 
     def get_all_paper_ids(self) -> list[str]:
         with self._conn() as conn:
@@ -414,6 +444,34 @@ class Repo:
             "reference_with_doi_count": int(refs_with_doi),
             "edge_count": int(edges),
         }
+
+    def get_global_degree_maps(self, paper_ids: list[str]) -> dict[str, dict[str, int]]:
+        if not paper_ids:
+            return {"out_refs_global": {}, "in_citations_global": {}}
+        placeholders = ",".join(["?"] * len(paper_ids))
+        with self._conn() as conn:
+            out_rows = conn.execute(
+                f"""
+                SELECT src_paper_id AS paper_id, count(*) AS c
+                FROM api_references
+                WHERE src_paper_id IN ({placeholders})
+                GROUP BY src_paper_id
+                """,
+                paper_ids,
+            ).fetchall()
+            in_rows = conn.execute(
+                f"""
+                SELECT dst_paper_id AS paper_id, count(*) AS c
+                FROM citation_edges
+                WHERE dst_paper_id IN ({placeholders})
+                GROUP BY dst_paper_id
+                """,
+                paper_ids,
+            ).fetchall()
+
+        out_map = {str(r["paper_id"]): int(r["c"]) for r in out_rows}
+        in_map = {str(r["paper_id"]): int(r["c"]) for r in in_rows}
+        return {"out_refs_global": out_map, "in_citations_global": in_map}
 
     def graph_neighbors(self, paper_id: str, direction: str = "both", limit: int = 50) -> dict:
         with self._conn() as conn:

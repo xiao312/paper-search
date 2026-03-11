@@ -14,6 +14,7 @@ __pycache__/
 /data/live_markdown/
 /data/live*/
 /data/live*
+/docs/runs/
 
 # OS/editor
 .DS_Store

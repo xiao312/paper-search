@@ -270,11 +270,20 @@ def extract_references(root: ET.Element) -> list[Reference]:
         for ref in root.iter():
             if strip_ns(ref.tag) != tag:
                 continue
+
+            explicit_doi = ""
+            for ch in ref.iter():
+                if strip_ns(ch.tag) == "doi":
+                    explicit_doi = iter_text(ch)
+                    if explicit_doi:
+                        break
+
             text = _clean_ref_text(iter_text(ref))
             if not text:
                 continue
             doi_m = re.search(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", text, flags=re.I)
-            bucket.append(Reference(key=ref.attrib.get("id", "") or ref.attrib.get("refid", ""), text=text, doi=doi_m.group(0) if doi_m else None))
+            doi = explicit_doi or (doi_m.group(0) if doi_m else None)
+            bucket.append(Reference(key=ref.attrib.get("id", "") or ref.attrib.get("refid", ""), text=text, doi=doi))
         if bucket:
             refs = bucket
             break

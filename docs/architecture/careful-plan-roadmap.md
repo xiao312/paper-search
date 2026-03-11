@@ -44,6 +44,10 @@ Exit criteria:
 - stable stop behavior across representative queries
 - completeness estimate included in outputs
 
+Reference inventory: `docs/specs/api-sources-inventory.md`
+Philosophy & positioning: `docs/architecture/philosophy-and-positioning.md`
+Combustion startup execution spec: `docs/specs/combustion-v1-quality-first-plan.md`
+
 ## API/Service Usage Matrix
 
 | Capability | Service | Why |
